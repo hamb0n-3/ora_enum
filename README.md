@@ -1,45 +1,35 @@
-Of course. Here is a comprehensive `README.md` file for the script, formatted in Markdown for easy use on platforms like GitHub.
+Of course. Here is a comprehensive, updated `README.md` that reflects all the latest features of the script, including the password spraying mode and the bug fixes.
 
 ---
 
-# `ora_privs`: Advanced Oracle Enumerator for Red Teams
+# `ora_enum`: Advanced Oracle Enumerator & Sprayer for Red Teams
 
-`ora_privs` is a powerful, highly-configurable Python script designed for penetration testers and red teamers to rapidly enumerate privileges and discover sensitive data within Oracle databases. It automates common post-exploitation tasks, provides actionable analysis of privileges, and includes a direct query mode for surgical data extraction.
+`ora_enum` is a powerful, multi-modal Python script designed for penetration testers and red teamers to rapidly enumerate privileges, discover sensitive data, spray credentials, and execute direct queries within Oracle databases.
 
 This tool helps answer critical questions during an assessment:
-- What can this user see and do?
-- Are there clear paths to escalate privileges?
-- Where is the sensitive data (PII, credentials, keys)?
-- Can I pivot to other databases?
+- **(Spray)** Which default or weak credentials are valid?
+- **(Enumerate)** What can this user see and do? Are there clear paths to escalate privileges?
+- **(Hunt)** Where is the sensitive data (PII, credentials, keys)?
+- **(Query)** Can I surgically extract specific information?
 
 ## Features
 
-- **Multi-Target Enumeration**: Scan multiple databases and/or user accounts with a single command.
-- **Flexible Credential Handling**: Provide credentials on the command line or use an interactive prompt for better OPSEC.
+- **Multiple Modes of Operation**:
+  - **Enumeration Mode**: Deeply audits a user's permissions and finds sensitive data.
+  - **Password Spraying Mode**: Efficiently tests lists of usernames and passwords against multiple databases.
+  - **Direct Query Mode**: Executes a single SQL query for targeted data gathering.
+- **Flexible Credential Handling**: Provide credentials on the command line, from files, or use an interactive prompt for better OPSEC.
 - **Smart Scoping**: Automatically uses the best available data dictionary views (`DBA_`, `ALL_`, `USER_`) based on the current user's permissions.
-- **Comprehensive Enumeration Categories**:
-  - `roles`: Assigned roles.
-  - `sys`: System-level privileges (`CREATE ANY TABLE`, etc.).
-  - `obj`: Object-level privileges (`SELECT` on `payroll`, etc.).
-  - `col`: Column-level privileges.
-  - `profile`: User profile details, status, and password policy.
-  - `quotas`: Tablespace quotas.
-  - `dblinks`: Database links, a key vector for lateral movement.
-- **Actionable Privilege Analysis**: Automatically identifies and flags high-impact privileges that can lead to privilege escalation (e.g., `CREATE ANY PROCEDURE`, `GRANT ANY ROLE`).
+- **Actionable Privilege Analysis**: Automatically identifies and flags high-impact privileges that can lead to privilege escalation.
 - **Configurable Sensitive Data Hunting**:
   - A dedicated `sensitive` category to find PII, credentials, API keys, etc.
   - Searches for keywords in both table/column names and PL/SQL source code.
-  - Fully configurable search terms (`--search-terms`).
-- **Direct Query Mode**: Execute arbitrary SQL queries directly from the command line for targeted data gathering.
-- **Multiple Output Formats**: Generate reports in `Excel`, `CSV`, or `JSON` for easy analysis and integration with other tools.
-- **OPSEC-Aware Features**:
-  - Warns the operator before performing potentially audited actions (`--grant-catalog-role`).
-  - Supports interactive password prompts to avoid shell history exposure.
+- **Multiple Output Formats**: Generate reports in `Excel`, `CSV`, or `JSON`.
 
 ## Requirements
 
 - **Python 3.6+**
-- The **`oracledb`** or **`cx_Oracle`** Python package. `oracledb` is the modern, recommended driver.
+- The **`oracledb`**, **`pandas`**, and **`openpyxl`** Python packages.
   ```bash
   pip install oracledb pandas openpyxl
   ```
@@ -47,51 +37,60 @@ This tool helps answer critical questions during an assessment:
 
 ## Usage
 
-The script operates in two main modes: **Enumeration Mode** (default) and **Direct Query Mode** (`-q`/`--query`).
+The script detects the desired mode of operation based on the flags provided.
 
 ```
-usage: ora_privs.py [-h] [-C list] [-c pair] [-D list] [-d dsn] [-P] [-T list] [-t name] [-s {dba,all,user,auto}] [-k include] [--search-terms SEARCH_TERMS] [-g] [-o output] [-O outdir] [-q SQL] [--force] [-v]
+usage: ora_privs.py [-h] [-C list] [-c pair] [-P] [--users-file USERS_FILE] [--pass-file PASS_FILE] [--login-user LOGIN_USER] [--login-pass LOGIN_PASS] [-D list] [-d dsn] [-T list] [-t name] [-s {dba,all,user,auto}]
+                    [-k include] [--search-terms SEARCH_TERMS] [-g] [-o output] [-O outdir] [-q SQL] [--force] [-v]
 
-Advanced Oracle Enumerator and Query Tool for Red Teams.
+Advanced Oracle Enumerator & Sprayer for Red Teams.
 
 optional arguments:
   -h, --help            show this help message and exit
-  -v, --verbose         Enable verbose/debug logging
+  -v, --verbose         Increase verbosity (-v for INFO, -vv for DEBUG)
 
-Credential & Connection (All Modes):
-  -C credential list               Comma-separated list: user[:pw][@dsn],...
-  -c credential str               Single credential: user[:pw]
-  -D dsn list               Comma-separated DSN list (for -C items w/o @dsn)
-  -d dsn str                Single DSN (for -c w/o @dsn)
+Credential & Connection (for Enum/Query Modes):
+  -C list               Comma-separated list: user[:pw][@dsn],...
+  -c pair               Single credential: user[:pw]
   -P, --ask-pass        Prompt for passwords interactively.
 
+Password Spraying Mode:
+  --users-file USERS_FILE
+                        File with one username per line.
+  --pass-file PASS_FILE
+                        File with one password per line.
+  --login-user LOGIN_USER
+                        Single username for spraying.
+  --login-pass LOGIN_PASS
+                        Single password for spraying.
+
+DSN Management (All Modes):
+  -D list, --dsn-list list
+                        Comma-separated DSN list (e.g., host/svc,host2/svc2)
+  -d dsn, --dsn dsn     Single DSN (shortcut for -D)
+
 Enumeration Mode:
-  -T list               Comma-separated list of target users to enumerate
+  -T list               Target users to enumerate (comma-separated)
   -t name               Single target user to enumerate
   -s {dba,all,user,auto}, --scope {dba,all,user,auto}
-                        View prefix to use (DBA_, ALL_, USER_). Default: auto
+                        View prefix to use. Default: auto
   -k include, --include include
-                        Categories to check (comma-separated):
-                          roles, sys, obj, col, quotas, profile,
-                          dblinks, sensitive (default: roles,sys,obj)
+                        Categories: roles,sys,obj,col,quotas,profile,dblinks,sensitive
   --search-terms SEARCH_TERMS
-                        Keywords for 'sensitive' search (comma-separated).
-                        Default: password,passwd,secret,key,token,ssn,pii,credit,card,cvv
+                        Keywords for 'sensitive' search
   -g, --grant-catalog-role
-                        Attempt to grant SELECT_CATALOG_ROLE to login user (AUDITED!)
+                        Attempt to grant SELECT_CATALOG_ROLE (AUDITED!)
   -o output, --output output
-                        Formats: excel,csv,json (default: excel)
+                        Formats: excel,csv,json
   -O outdir, --outdir outdir
-                        Directory for result files (default: .)
+                        Directory for result files
 
 Direct Query Mode:
-  -q SQL, --query SQL   Execute a single query and print results to stdout.
+  -q SQL, --query SQL   Execute a single query and print results.
   --force               Allow non-SELECT queries with -q (DANGEROUS).
-
 ```
 
 ### DSN (Data Source Name) Format
-
 A DSN string tells the Oracle client how to connect. Common formats include:
 - **Easy Connect**: `hostname:port/service_name` (e.g., `db.example.com:1521/ORCLPDB1`)
 - **TNS Name**: A name defined in your `tnsnames.ora` file (e.g., `PRODDB`)
@@ -101,60 +100,58 @@ A DSN string tells the Oracle client how to connect. Common formats include:
 ### Examples
 
 #### 1. Basic Privilege Enumeration
-Enumerate the privileges of the logged-in user (`scott`) and save the results to an Excel file.
+Enumerate the privileges of the logged-in user (`scott`) and save to Excel.
 
 ```bash
 python3 ora_privs.py -c scott:tiger -d db.example.com:1521/ORCL
 ```
-*This will create a file named `SCOTT_ORCL.xlsx` with sheets for roles, system privileges, and object privileges.*
 
-#### 2. Multi-Target Scan with Interactive Password
-Scan two different databases using different credentials. Prompt for passwords to avoid leaving them in shell history.
-
-```bash
-python3 ora_privs.py -C "hr@db1.example.com/HRDB,sys@db2.example.com/FINDB as sysdba" -P
-```
-*The script will prompt for the password for `hr` and then for `sys`.*
-
-#### 3. Full Enumeration of a Specific Target User
-Log in as `system` and enumerate all privilege and data categories for the `WEB_APP` user.
+#### 2. Password Spraying with a List
+Spray a list of common passwords against a list of users on two databases.
 
 ```bash
-python3 ora_privs.py -c system -d db.example.com:1521/ORCL -P \
-  -t WEB_APP \
-  -k all \
-  -o json -O /tmp/audit_results
+# users.txt contains 'scott', 'system', 'sys'
+# passwords.txt contains 'tiger', 'manager', 'oracle'
+python3 ora_privs.py --users-file users.txt --pass-file passwords.txt -D "db1:1521/DEV,db2:1521/PROD"
 ```
-*This command uses `-k all` as a shorthand for all categories and saves a JSON report.*
+*Output will highlight any successful logins with `[+] SUCCESS`.*
 
-#### 4. Hunting for Sensitive Data
-Log in as a low-privilege user and hunt for any columns or source code containing PII or credentials, using custom search terms.
+#### 3. Spraying a Single Password (Seasonal Password Attack)
+Test if any user from a list has a common seasonal password.
+
+```bash
+python3 ora_privs.py --users-file users.txt --login-pass "Winter2024!" -D db.example.com:1521/ORCL
+```
+
+#### 4. Brute-Forcing a Single Account
+Try a list of passwords against the `system` account.
+
+```bash
+python3 ora_privs.py --login-user system --pass-file common-passwords.txt -D db.example.com:1521/ORCL -vv
+```
+*Using `-vv` will show every failed attempt for debugging.*
+
+#### 5. Hunting for Sensitive Data
+Log in and hunt for any columns or source code containing PII or credentials.
 
 ```bash
 python3 ora_privs.py -c appuser:password123 -d appdb:1521/APP \
   -k sensitive \
-  --search-terms "ssn,dob,api_key,secret,auth_token"
+  --search-terms "ssn,dob,api_key,secret"
 ```
-*This will create an Excel file with sheets `sensitive_columns` and `sensitive_source` listing any findings.*
 
-#### 5. Using Direct Query Mode to Get Database Version
-Quickly get the database version from multiple targets.
+#### 6. Direct Query Mode
+Quickly get the database version from a target.
 
 ```bash
-python3 ora_privs.py -C "user1@db1,user2@db2" -D "host1/svc1,host2/svc2" -P \
-  -q "SELECT banner FROM v\$version"
+python3 ora_privs.py -c user:pass -d db1:1521/SVC1 -q "SELECT banner FROM v\$version"
 ```
-*The results will be printed directly to the console in a table format for each target.*
 
-#### 6. Using Direct Query Mode to Add a User (OPSEC Risk!)
-Create a new user. This requires the `--force` flag because it's not a `SELECT` statement.
+## OPSEC Considerations
 
-```bash
-python3 ora_privs.py -c sys:SuperSecret1@db.example.com/SYSDB as sysdba --force \
-  -q "CREATE USER rteam IDENTIFIED BY P@ssword123"
-```
-* **WARNING**: DDL/DML statements are highly likely to be audited. Use with extreme caution.
+- **Password Spraying is NOISY**. It generates many failed login attempts which can trigger alerts and cause account lockouts. Use with caution.
+- Using `-P/--ask-pass` is recommended over putting passwords on the command line to avoid them being stored in shell history.
+- Actions like `--grant-catalog-role` or using `--force` with `-q` are DDL/DML operations and are highly likely to be audited.
 
 ## License
-
 This tool is provided for educational and authorized security testing purposes only. Use of this tool for illegal or unauthorized activities is strictly prohibited. The author is not responsible for any misuse or damage caused by this tool.
