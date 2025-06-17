@@ -146,51 +146,59 @@ def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> d
     p = prefix
     sql = {}
 
-    # NON-DBA SCOPE: Queries must be adapted for ALL_ or USER_ views.
-    if p != 'DBA_':
-        logging.debug("Using non-DBA query set for %s scope.", p)
-        if "roles" in categories:
-            # USER_ROLE_PRIVS has no 'grantee'. Implicitly the current user. No bind variable needed.
-            sql["roles"] = "SELECT granted_role, admin_option, delegate_option, default_role FROM USER_ROLE_PRIVS ORDER BY granted_role"
-        if "sys" in categories:
-            # Show privs for current user, both direct and via roles they have. No bind variable needed.
-            sql["sys"] = """SELECT privilege, admin_option, 'DIRECT' AS granted_through FROM USER_SYS_PRIVS
-                            UNION ALL
-                            SELECT rsp.privilege, rsp.admin_option, urp.granted_role AS granted_through
-                            FROM ROLE_SYS_PRIVS rsp JOIN USER_ROLE_PRIVS urp ON rsp.role = urp.granted_role
-                            ORDER BY privilege"""
-        if "obj" in categories:
-            # ALL_TAB_PRIVS exists and has a GRANTEE. We can't easily see privs from roles, so we only show direct grants.
-            sql["obj"] = f"SELECT owner, table_name, privilege, grantable, grantor, grantee FROM {p}TAB_PRIVS WHERE grantee = :bind_user ORDER BY owner, table_name, privilege"
-        if "col" in categories:
-            # Similar to obj privs, ALL_COL_PRIVS exists.
-            sql["col"] = f"SELECT owner, table_name, column_name, privilege, grantable, grantor, grantee FROM {p}COL_PRIVS WHERE grantee = :bind_user ORDER BY owner, table_name, column_name, privilege"
-        # The following queries are less scope-dependent but we should use the most appropriate view
-        if "profile" in categories:
-            sql["profile"] = f"SELECT * FROM {p}USERS WHERE username = :bind_user"
-        if "quotas" in categories:
-            # USER_TS_QUOTAS has no 'username'. No bind variable needed.
-            sql["quotas"] = "SELECT * FROM USER_TS_QUOTAS"
-        if "dblinks" in categories:
-            sql["dblinks"] = f"SELECT owner, db_link, username, host, created FROM {p}DB_LINKS"
+    # DBA SCOPE: Original, powerful queries that can target any user.
+    if p == 'DBA_':
+        logging.debug("Using DBA query set.")
+        if "roles" in categories: sql["roles"] = f"SELECT * FROM {p}ROLE_PRIVS WHERE grantee = :bind_user ORDER BY granted_role"
+        if "sys" in categories: sql["sys"] = f"""SELECT privilege, admin_option, grantee AS granted_to FROM {p}SYS_PRIVS WHERE grantee = :bind_user UNION ALL SELECT p.privilege, p.admin_option, r.grantee FROM {p}SYS_PRIVS p JOIN {p}ROLE_PRIVS r ON r.granted_role = p.grantee WHERE r.grantee = :bind_user ORDER BY privilege"""
+        if "obj" in categories: sql["obj"] = f"""SELECT owner, table_name, privilege, grantable, grantor, grantee FROM {p}TAB_PRIVS WHERE grantee = :bind_user UNION ALL SELECT t.owner, t.table_name, t.privilege, t.grantable, t.grantor, r.grantee FROM {p}TAB_PRIVS t JOIN {p}ROLE_PRIVS r ON r.granted_role = t.grantee WHERE r.grantee = :bind_user ORDER BY owner, table_name, privilege"""
+        if "col" in categories: sql["col"] = f"""SELECT owner, table_name, column_name, privilege, grantable, grantor, grantee FROM {p}COL_PRIVS WHERE grantee = :bind_user UNION ALL SELECT c.owner, c.table_name, c.column_name, c.privilege, c.grantable, c.grantor, r.grantee FROM {p}COL_PRIVS c JOIN {p}ROLE_PRIVS r ON r.granted_role = c.grantee WHERE r.grantee = :bind_user ORDER BY owner, table_name, column_name, privilege"""
+        if "profile" in categories: sql["profile"] = "SELECT * FROM dba_users WHERE username = :bind_user"
+        if "quotas" in categories: sql["quotas"] = "SELECT * FROM dba_ts_quotas WHERE username = :bind_user"
+        if "dblinks" in categories: sql["dblinks"] = "SELECT owner, db_link, username, host, created FROM dba_db_links"
         if "sensitive" in categories:
-            sql["sensitive_columns"] = f"SELECT owner, table_name, column_name FROM {p}TAB_COLUMNS WHERE {_build_like_clause('column_name', search_terms)} AND owner NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP') ORDER BY owner, table_name"
-            sql["sensitive_source"] = f"SELECT owner, name, type, line, text FROM {p}SOURCE WHERE {_build_like_clause('text', search_terms)} AND owner NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP') ORDER BY owner, name, line"
+            sql["sensitive_columns"] = f"SELECT owner, table_name, column_name FROM {p}tab_columns WHERE {_build_like_clause('column_name', search_terms)} AND owner NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP') ORDER BY owner, table_name"
+            sql["sensitive_source"] = f"SELECT owner, name, type, line, text FROM {p}source WHERE {_build_like_clause('text', search_terms)} AND owner NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP') ORDER BY owner, name, line"
         return sql
 
-    # DBA SCOPE: Original, powerful queries that can target any user.
-    logging.debug("Using DBA query set.")
-    if "roles" in categories: sql["roles"] = f"SELECT * FROM {p}ROLE_PRIVS WHERE grantee = :bind_user ORDER BY granted_role"
-    if "sys" in categories: sql["sys"] = f"""SELECT privilege, admin_option, grantee AS granted_to FROM {p}SYS_PRIVS WHERE grantee = :bind_user UNION ALL SELECT p.privilege, p.admin_option, r.grantee FROM {p}SYS_PRIVS p JOIN {p}ROLE_PRIVS r ON r.granted_role = p.grantee WHERE r.grantee = :bind_user ORDER BY privilege"""
-    if "obj" in categories: sql["obj"] = f"""SELECT owner, table_name, privilege, grantable, grantor, grantee FROM {p}TAB_PRIVS WHERE grantee = :bind_user UNION ALL SELECT t.owner, t.table_name, t.privilege, t.grantable, t.grantor, r.grantee FROM {p}TAB_PRIVS t JOIN {p}ROLE_PRIVS r ON r.granted_role = t.grantee WHERE r.grantee = :bind_user ORDER BY owner, table_name, privilege"""
-    if "col" in categories: sql["col"] = f"""SELECT owner, table_name, column_name, privilege, grantable, grantor, grantee FROM {p}COL_PRIVS WHERE grantee = :bind_user UNION ALL SELECT c.owner, c.table_name, c.column_name, c.privilege, c.grantable, c.grantor, r.grantee FROM {p}COL_PRIVS c JOIN {p}ROLE_PRIVS r ON r.granted_role = c.grantee WHERE r.grantee = :bind_user ORDER BY owner, table_name, column_name, privilege"""
-    if "profile" in categories: sql["profile"] = "SELECT * FROM dba_users WHERE username = :bind_user"
-    if "quotas" in categories: sql["quotas"] = "SELECT * FROM dba_ts_quotas WHERE username = :bind_user"
-    if "dblinks" in categories: sql["dblinks"] = "SELECT owner, db_link, username, host, created FROM dba_db_links"
+    # NON-DBA SCOPE: Queries must be adapted for ALL_ or USER_ views.
+    
+    # Common queries for both ALL and USER that are handled the same way
+    if "roles" in categories:
+        sql["roles"] = "SELECT granted_role, admin_option, delegate_option, default_role FROM USER_ROLE_PRIVS ORDER BY granted_role"
+    if "sys" in categories:
+        sql["sys"] = """SELECT privilege, admin_option, 'DIRECT' AS granted_through FROM USER_SYS_PRIVS
+                        UNION ALL
+                        SELECT rsp.privilege, rsp.admin_option, urp.granted_role AS granted_through
+                        FROM ROLE_SYS_PRIVS rsp JOIN USER_ROLE_PRIVS urp ON rsp.role = urp.granted_role
+                        ORDER BY privilege"""
+    if "quotas" in categories:
+        sql["quotas"] = "SELECT * FROM USER_TS_QUOTAS" # USER_TS_QUOTAS has no username column.
+    if "profile" in categories:
+        sql["profile"] = "SELECT * FROM ALL_USERS WHERE username = :bind_user" # USER_USERS does not exist.
+
+    # Scope-dependent queries
+    owner_col = "owner" if p == "ALL_" else "USER AS owner"
+    
+    if "obj" in categories:
+        sql["obj"] = f"SELECT {owner_col}, table_name, privilege, grantable, grantor, grantee FROM {p}TAB_PRIVS WHERE grantee = :bind_user ORDER BY owner, table_name, privilege"
+    if "col" in categories:
+        sql["col"] = f"SELECT {owner_col}, table_name, column_name, privilege, grantable, grantor, grantee FROM {p}COL_PRIVS WHERE grantee = :bind_user ORDER BY owner, table_name, column_name, privilege"
+    if "dblinks" in categories:
+        sql["dblinks"] = f"SELECT {owner_col}, db_link, username, host, created FROM {p}DB_LINKS"
     if "sensitive" in categories:
-        sql["sensitive_columns"] = f"SELECT owner, table_name, column_name FROM dba_tab_columns WHERE {_build_like_clause('column_name', search_terms)} AND owner NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP') ORDER BY owner, table_name"
-        sql["sensitive_source"] = f"SELECT owner, name, type, line, text FROM dba_source WHERE {_build_like_clause('text', search_terms)} AND owner NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP') ORDER BY owner, name, line"
+        sql["sensitive_columns"] = f"SELECT {owner_col}, table_name, column_name FROM {p}TAB_COLUMNS WHERE {_build_like_clause('column_name', search_terms)} AND {owner_col} NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP') ORDER BY owner, table_name"
+        sql["sensitive_source"] = f"SELECT {owner_col}, name, type, line, text FROM {p}SOURCE WHERE {_build_like_clause('text', search_terms)} AND {owner_col} NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP') ORDER BY owner, name, line"
+
+    # For USER scope, some queries don't need a bind variable because the grantee is implicit.
+    if p == 'USER_':
+        if "obj" in categories:
+            sql["obj"] = "SELECT USER AS owner, table_name, privilege, grantable, grantor, USER AS grantee FROM USER_TAB_PRIVS ORDER BY table_name, privilege"
+        if "col" in categories:
+            sql["col"] = "SELECT USER AS owner, table_name, column_name, privilege, grantable, grantor, USER AS grantee FROM USER_COL_PRIVS ORDER BY table_name, column_name, privilege"
+
     return sql
+
 
 
 def fetch_frames(cur, stmts: dict[str, str], user: str) -> dict[str, pd.DataFrame]:
