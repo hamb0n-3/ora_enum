@@ -74,11 +74,11 @@ def generate_login_combos(args) -> List[Tuple[str, str, str]]:
         logging.info("Running in Password Spraying Mode.")
         users = read_file_lines(args.users_file) or ([args.login_user] if args.login_user else [])
         passwords = read_file_lines(args.pass_file) or ([args.login_pass] if args.login_pass else [])
-        dsns = split_csv(args.D)
+        dsns = split_csv(args.dsn_list)
 
         if not all([users, passwords, dsns]):
             logging.error("For spraying, you must provide users, passwords, and DSNs.")
-            logging.error("Use --users-file/--login-user, --pass-file/--login-pass, and -D.")
+            logging.error("Use --users-file/--login-user, --pass-file/--login-pass, and -D/--dsn-list.")
             sys.exit(1)
         
         logging.info("Loaded %d users, %d passwords, %d DSNs. Total attempts: %d",
@@ -88,7 +88,7 @@ def generate_login_combos(args) -> List[Tuple[str, str, str]]:
     # Static/Enum Mode
     creds = []
     c_list = split_csv(args.C) if args.C else ([args.c] if args.c else [])
-    d_list = split_csv(args.D) if args.D else ([args.d] if args.d else [])
+    d_list = split_csv(args.dsn_list) # Simplified logic using the unified dsn_list
     if not c_list:
         logging.error("No credentials provided for enumeration or query mode. Use -c or -C.")
         sys.exit(1)
@@ -111,7 +111,7 @@ def generate_login_combos(args) -> List[Tuple[str, str, str]]:
             if idx < len(d_list):
                 dsn = d_list[idx]
             else:
-                logging.error("Missing DSN for credential '%s'. Provide it via @dsn or -d/-D.", tok)
+                logging.error("Missing DSN for credential '%s'. Provide it via @dsn or -d/--dsn or -D/--dsn-list.", tok)
                 sys.exit(1)
         creds.append((user, pw, dsn))
     return creds
@@ -316,7 +316,7 @@ def main(argv: List[str] | None = None):
     
     # Unify DSN arguments
     if args.dsn:
-        args.D = args.D + "," + args.dsn if args.D else args.dsn
+        args.dsn_list = (args.dsn_list + "," + args.dsn) if args.dsn_list else args.dsn
 
     # --- Mode Dispatcher ---
     creds = generate_login_combos(args)
