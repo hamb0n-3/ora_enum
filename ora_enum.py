@@ -304,6 +304,14 @@ def handle_enumeration(creds, args):
 
                     
                     enum_targets = targets or [user]
+                    if prefix != "DBA_" and (targets and set(t.upper() for t in targets) != {user.upper()}):
+                        logging.warning(
+                            "Non-DBA scope ('%s') detected. Privilege enumeration can only be run for the logged-in user ('%s').",
+                            prefix.strip('_'), user
+                        )
+                        logging.warning("Ignoring specified targets: %s", ", ".join(targets))
+                        enum_targets = [user]
+
                     for tgt_user in enum_targets:
                         logging.info("Enumerating data for target user: %s", tgt_user.upper())
                         sqls = build_sqls(prefix, cats, search_terms)
