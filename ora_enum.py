@@ -146,9 +146,11 @@ def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> d
     p = prefix
     sql = {}
 
+    sensitive_owner_filter = "AND owner NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP')"
+
     # SCOPE 1: DBA - Full power, can see everything for any user.
     if p == 'DBA_':
-        logging.debug("Using DBA query set.")
+        logging.debug("Building DBA-scope SQL queries.")
         if "roles" in categories: sql["roles"] = "SELECT * FROM DBA_ROLE_PRIVS WHERE grantee = :bind_user ORDER BY granted_role"
         if "sys" in categories: sql["sys"] = "SELECT privilege, admin_option, grantee AS granted_to FROM DBA_SYS_PRIVS WHERE grantee = :bind_user UNION ALL SELECT p.privilege, p.admin_option, r.grantee FROM DBA_SYS_PRIVS p JOIN DBA_ROLE_PRIVS r ON r.granted_role = p.grantee WHERE r.grantee = :bind_user ORDER BY privilege"
         if "obj" in categories: sql["obj"] = "SELECT owner, table_name, privilege, grantable, grantor, grantee FROM DBA_TAB_PRIVS WHERE grantee = :bind_user UNION ALL SELECT t.owner, t.table_name, t.privilege, t.grantable, t.grantor, r.grantee FROM DBA_TAB_PRIVS t JOIN DBA_ROLE_PRIVS r ON r.granted_role = t.grantee WHERE r.grantee = :bind_user ORDER BY owner, table_name, privilege"
@@ -157,13 +159,13 @@ def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> d
         if "quotas" in categories: sql["quotas"] = "SELECT * FROM DBA_TS_QUOTAS WHERE username = :bind_user"
         if "dblinks" in categories: sql["dblinks"] = "SELECT owner, db_link, username, host, created FROM DBA_DB_LINKS"
         if "sensitive" in categories:
-            sql["sensitive_columns"] = f"SELECT owner, table_name, column_name FROM DBA_TAB_COLUMNS WHERE {_build_like_clause('column_name', search_terms)} AND owner NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP') ORDER BY owner, table_name"
-            sql["sensitive_source"] = f"SELECT owner, name, type, line, text FROM DBA_SOURCE WHERE {_build_like_clause('text', search_terms)} AND owner NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP') ORDER BY owner, name, line"
+            sql["sensitive_columns"] = f"SELECT owner, table_name, column_name FROM DBA_TAB_COLUMNS WHERE {_build_like_clause('column_name', search_terms)} {sensitive_owner_filter} ORDER BY owner, table_name"
+            sql["sensitive_source"] = f"SELECT owner, name, type, line, text FROM DBA_SOURCE WHERE {_build_like_clause('text', search_terms)} {sensitive_owner_filter} ORDER BY owner, name, line"
         return sql
 
     # SCOPE 2: ALL - Can see all objects the user has access to, regardless of owner.
     elif p == 'ALL_':
-        logging.debug("Using ALL query set.")
+        logging.debug("Building ALL-scope SQL queries.")
         if "roles" in categories: sql["roles"] = "SELECT granted_role, admin_option, delegate_option, default_role FROM USER_ROLE_PRIVS ORDER BY granted_role"
         if "sys" in categories: sql["sys"] = """SELECT privilege, admin_option, 'DIRECT' AS granted_through FROM USER_SYS_PRIVS UNION ALL SELECT rsp.privilege, rsp.admin_option, urp.granted_role AS granted_through FROM ROLE_SYS_PRIVS rsp JOIN USER_ROLE_PRIVS urp ON rsp.role = urp.granted_role ORDER BY privilege"""
         if "obj" in categories: sql["obj"] = "SELECT owner, table_name, privilege, grantable, grantor, grantee FROM ALL_TAB_PRIVS WHERE grantee = :bind_user ORDER BY owner, table_name, privilege"
@@ -172,18 +174,19 @@ def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> d
         if "quotas" in categories: sql["quotas"] = "SELECT * FROM USER_TS_QUOTAS"
         if "dblinks" in categories: sql["dblinks"] = "SELECT owner, db_link, username, host, created FROM ALL_DB_LINKS"
         if "sensitive" in categories:
-            sql["sensitive_columns"] = f"SELECT owner, table_name, column_name FROM ALL_TAB_COLUMNS WHERE {_build_like_clause('column_name', search_terms)} AND owner NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP') ORDER BY owner, table_name"
-            sql["sensitive_source"] = f"SELECT owner, name, type, line, text FROM ALL_SOURCE WHERE {_build_like_clause('text', search_terms)} AND owner NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP') ORDER BY owner, name, line"
+            sql["sensitive_columns"] = f"SELECT owner, table_name, column_name FROM ALL_TAB_COLUMNS WHERE {_build_like_clause('column_name', search_terms)} {sensitive_owner_filter} ORDER BY owner, table_name"
+            sql["sensitive_source"] = f"SELECT owner, name, type, line, text FROM ALL_SOURCE WHERE {_build_like_clause('text', search_terms)} {sensitive_owner_filter} ORDER BY owner, name, line"
         return sql
 
     # SCOPE 3: USER - Can only see objects owned by the current user. Views are different.
     elif p == 'USER_':
-        logging.debug("Using USER query set.")
+        logging.debug("Building USER-scope SQL queries.")
         if "roles" in categories: sql["roles"] = "SELECT granted_role, admin_option, delegate_option, default_role FROM USER_ROLE_PRIVS ORDER BY granted_role"
         if "sys" in categories: sql["sys"] = """SELECT privilege, admin_option, 'DIRECT' AS granted_through FROM USER_SYS_PRIVS UNION ALL SELECT rsp.privilege, rsp.admin_option, urp.granted_role AS granted_through FROM ROLE_SYS_PRIVS rsp JOIN USER_ROLE_PRIVS urp ON rsp.role = urp.granted_role ORDER BY privilege"""
-        # USER_TAB_PRIVS and USER_COL_PRIVS list grants on the user's own objects. They DO contain an owner column.
-        if "obj" in categories: sql["obj"] = "SELECT owner, table_name, privilege, grantable, grantor, grantee FROM USER_TAB_PRIVS ORDER BY grantee, table_name, privilege"
-        if "col" in categories: sql["col"] = "SELECT owner, table_name, column_name, privilege, grantable, grantor, grantee FROM USER_COL_PRIVS ORDER BY grantee, table_name, column_name, privilege"
+        # USER_TAB_PRIVS and USER_COL_PRIVS list grants on the user's own objects. They do NOT have an owner column.
+        # We must synthetically add the owner with `USER as owner`.
+        if "obj" in categories: sql["obj"] = "SELECT USER as owner, table_name, privilege, grantable, grantor, grantee FROM USER_TAB_PRIVS ORDER BY grantee, table_name, privilege"
+        if "col" in categories: sql["col"] = "SELECT USER as owner, table_name, column_name, privilege, grantable, grantor, grantee FROM USER_COL_PRIVS ORDER BY grantee, table_name, column_name, privilege"
         if "profile" in categories: sql["profile"] = "SELECT username, user_id, account_status, created, profile FROM USER_USERS"
         if "quotas" in categories: sql["quotas"] = "SELECT * FROM USER_TS_QUOTAS"
         # The following USER views do NOT have an OWNER column. We add it synthetically for consistent output.
@@ -447,4 +450,3 @@ def main(argv: List[str] | None = None):
 
 if __name__ == "__main__":
     main()
-
