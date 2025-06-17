@@ -304,9 +304,10 @@ def build_parser() -> argparse.ArgumentParser:
     spray_group.add_argument("--login-user", help="Single username for spraying.")
     spray_group.add_argument("--login-pass", help="Single password for spraying.")
     
-    # DSNs are used by all modes, but are mandatory for spraying
-    p.add_argument("-D", "--dsn-list", metavar="list", help="Comma-separated DSN list (e.g., host/svc,host2/svc2)")
-    p.add_argument("-d", "--dsn", metavar="dsn", help="Single DSN (shortcut for -D)")
+    dsn_group = p.add_argument_group("DSN Management (All Modes)")
+    dsn_group.add_argument("-D", "--dsn-list", metavar="list", help="Comma-separated DSN list (e.g., host/svc,host2/svc2)")
+    dsn_group.add_argument("-d", "--dsn", metavar="dsn", help="Single DSN (shortcut for -D)")
+    dsn_group.add_argument("--dsn-file", help="File with one DSN per line.")
 
     enum_group = p.add_argument_group("Enumeration Mode")
     enum_group.add_argument("-T", metavar="list", help="Target users to enumerate (comma-separated)")
@@ -337,9 +338,18 @@ def main(argv: List[str] | None = None):
         log_level = logging.WARNING
     logging.basicConfig(level=log_level, format="%(levelname)-.1s: %(message)s")
     
-    # Unify DSN arguments
+    # Unify all DSN sources into a single list for downstream functions
+    all_dsns = []
+    if args.dsn_list:
+        all_dsns.extend(split_csv(args.dsn_list))
     if args.dsn:
-        args.dsn_list = (args.dsn_list + "," + args.dsn) if args.dsn_list else args.dsn
+        all_dsns.append(args.dsn)
+    if args.dsn_file:
+        all_dsns.extend(read_file_lines(args.dsn_file))
+    
+    # Overwrite args.dsn_list with the complete, deduplicated list.
+    # dict.fromkeys preserves order while removing duplicates.
+    args.dsn_list = ",".join(list(dict.fromkeys(all_dsns)))
 
     # --- Mode Dispatcher ---
     creds = generate_login_combos(args)
