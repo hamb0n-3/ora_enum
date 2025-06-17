@@ -59,10 +59,10 @@ optional arguments:
   -v, --verbose         Enable verbose/debug logging
 
 Credential & Connection (All Modes):
-  -C list               Comma-separated list: user[:pw][@dsn],...
-  -c pair               Single credential: user[:pw]
-  -D list               Comma-separated DSN list (for -C items w/o @dsn)
-  -d dsn                Single DSN (for -c w/o @dsn)
+  -C credential list               Comma-separated list: user[:pw][@dsn],...
+  -c credential str               Single credential: user[:pw]
+  -D dsn list               Comma-separated DSN list (for -C items w/o @dsn)
+  -d dsn str                Single DSN (for -c w/o @dsn)
   -P, --ask-pass        Prompt for passwords interactively.
 
 Enumeration Mode:

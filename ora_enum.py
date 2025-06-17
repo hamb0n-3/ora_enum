@@ -1,32 +1,5 @@
 #!/usr/bin/env python3
-"""
-ora_privs.py ─ Advanced Oracle Enumerator for Red Teams
-========================================================
-
-Finds privileges, hunts for sensitive data, and executes direct queries.
-
-Enumeration Mode (Default):
----------------------------
-  -k/--include    roles,sys,obj,col,quotas,profile,dblinks,sensitive
-  -T / -t         targets to enumerate (default = login user)
-  --search-terms  "ssn,key,..." list of terms for the 'sensitive' category
-  -g              grant SELECT_CATALOG_ROLE to login user (AUDITED!)
-  -o/--output     excel,csv,json
-  -O/--outdir     directory for result files
-
-Direct Query Mode:
-------------------
-  -q/--query SQL  Execute a single query and print results to the console.
-  --force         Allow non-SELECT queries to be run with -q (DANGEROUS).
-
-Common Flags:
--------------
-  -c, -C          user[:pw][@dsn] credential formats
-  -d, -D          DSN lists
-  -P, --ask-pass  Prompt for passwords interactively
-  -s/--scope      dba | all | user | auto (view prefix)
-  -v              verbose / debug logging
-"""
+#Author: hamb0n-3
 from __future__ import annotations
 
 import argparse
