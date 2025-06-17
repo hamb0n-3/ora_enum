@@ -1,4 +1,6 @@
-Of course. Here is a comprehensive, updated `README.md` that reflects all the latest features of the script, including the password spraying mode and the bug fixes.
+Of course. A well-documented tool is an effective tool. I have updated the `README.md` to reflect all the recent fixes and enhancements, including the more robust credential parsing and the new `--creds-file` argument for easier scripting.
+
+Here is the updated `README.md`:
 
 ---
 
@@ -18,7 +20,7 @@ This tool helps answer critical questions during an assessment:
   - **Enumeration Mode**: Deeply audits a user's permissions and finds sensitive data.
   - **Password Spraying Mode**: Efficiently tests lists of usernames and passwords against multiple databases.
   - **Direct Query Mode**: Executes a single SQL query for targeted data gathering.
-- **Flexible Credential Handling**: Provide credentials on the command line, from files, or use an interactive prompt for better OPSEC.
+- **Flexible Credential Handling**: Provide credentials individually (`-c`), as a comma-separated list (`-C`), from a file (`--creds-file`), or use an interactive prompt (`-P`). The parsing logic is robust against special characters in passwords.
 - **Smart Scoping**: Automatically uses the best available data dictionary views (`DBA_`, `ALL_`, `USER_`) based on the current user's permissions.
 - **Actionable Privilege Analysis**: Automatically identifies and flags high-impact privileges that can lead to privilege escalation.
 - **Configurable Sensitive Data Hunting**:
@@ -33,15 +35,15 @@ This tool helps answer critical questions during an assessment:
   ```bash
   pip install oracledb pandas openpyxl
   ```
-- **Oracle Instant Client**: If using the Thick mode of `oracledb` or `cx_Oracle`, the Oracle Instant Client libraries must be installed and accessible.
+- **Oracle Instant Client**: If using the Thick mode of `oracledb`, the Oracle Instant Client libraries must be installed and accessible.
 
 ## Usage
 
 The script detects the desired mode of operation based on the flags provided.
 
 ```
-usage: ora_privs.py [-h] [-C list] [-c pair] [-P] [--users-file USERS_FILE] [--pass-file PASS_FILE] [--login-user LOGIN_USER] [--login-pass LOGIN_PASS] [-D list] [-d dsn] [-T list] [-t name] [-s {dba,all,user,auto}]
-                    [-k include] [--search-terms SEARCH_TERMS] [-g] [-o output] [-O outdir] [-q SQL] [--force] [-v]
+usage: ora_enum.py [-h] [-C list] [-c pair] [--creds-file CREDS_FILE] [-P] [--users-file USERS_FILE] [--pass-file PASS_FILE] [--login-user LOGIN_USER] [--login-pass LOGIN_PASS] [-D list] [-d dsn] [-T list]
+                   [-t name] [-s {dba,all,user,auto}] [-k include] [--search-terms SEARCH_TERMS] [-g] [-o output] [-O outdir] [-q SQL] [--force] [-v]
 
 Advanced Oracle Enumerator & Sprayer for Red Teams.
 
@@ -52,6 +54,8 @@ optional arguments:
 Credential & Connection (for Enum/Query Modes):
   -C list               Comma-separated list: user[:pw][@dsn],...
   -c pair               Single credential: user[:pw]
+  --creds-file CREDS_FILE
+                        File with one credential per line (user[:pw][@dsn]).
   -P, --ask-pass        Prompt for passwords interactively.
 
 Password Spraying Mode:
@@ -70,8 +74,10 @@ DSN Management (All Modes):
   -d dsn, --dsn dsn     Single DSN (shortcut for -D)
 
 Enumeration Mode:
-  -T list               Target users to enumerate (comma-separated)
-  -t name               Single target user to enumerate
+  -T list, --target-list list
+                        Target users to enumerate (comma-separated)
+  -t name, --target-user name
+                        Single target user to enumerate
   -s {dba,all,user,auto}, --scope {dba,all,user,auto}
                         View prefix to use. Default: auto
   -k include, --include include
@@ -103,7 +109,7 @@ A DSN string tells the Oracle client how to connect. Common formats include:
 Enumerate the privileges of the logged-in user (`scott`) and save to Excel.
 
 ```bash
-python3 ora_privs.py -c scott:tiger -d db.example.com:1521/ORCL
+python3 ora_enum.py -c scott:tiger -d db.example.com:1521/ORCL
 ```
 
 #### 2. Password Spraying with a List
@@ -112,7 +118,7 @@ Spray a list of common passwords against a list of users on two databases.
 ```bash
 # users.txt contains 'scott', 'system', 'sys'
 # passwords.txt contains 'tiger', 'manager', 'oracle'
-python3 ora_privs.py --users-file users.txt --pass-file passwords.txt -D "db1:1521/DEV,db2:1521/PROD"
+python3 ora_enum.py --users-file users.txt --pass-file passwords.txt -D "db1:1521/DEV,db2:1521/PROD"
 ```
 *Output will highlight any successful logins with `[+] SUCCESS`.*
 
@@ -120,14 +126,14 @@ python3 ora_privs.py --users-file users.txt --pass-file passwords.txt -D "db1:15
 Test if any user from a list has a common seasonal password.
 
 ```bash
-python3 ora_privs.py --users-file users.txt --login-pass "Winter2024!" -D db.example.com:1521/ORCL
+python3 ora_enum.py --users-file users.txt --login-pass "Winter2024!" -D db.example.com:1521/ORCL
 ```
 
 #### 4. Brute-Forcing a Single Account
 Try a list of passwords against the `system` account.
 
 ```bash
-python3 ora_privs.py --login-user system --pass-file common-passwords.txt -D db.example.com:1521/ORCL -vv
+python3 ora_enum.py --login-user system --pass-file common-passwords.txt -D db.example.com:1521/ORCL -vv
 ```
 *Using `-vv` will show every failed attempt for debugging.*
 
@@ -135,22 +141,33 @@ python3 ora_privs.py --login-user system --pass-file common-passwords.txt -D db.
 Log in and hunt for any columns or source code containing PII or credentials.
 
 ```bash
-python3 ora_privs.py -c appuser:password123 -d appdb:1521/APP \
+python3 ora_enum.py -c appuser:password123 -d appdb:1521/APP \
   -k sensitive \
   --search-terms "ssn,dob,api_key,secret"
 ```
 
-#### 6. Direct Query Mode
+#### 6. Enumerating Targets Using a Credentials File
+Use a file to provide credentials, which is ideal for handling passwords with special characters that might conflict with shell parsing.
+
+```bash
+# creds.txt contains one credential per line:
+# app_user:P@s$w0rd!/With$pecial@appdb:1521/SVC1
+# dba_user:AnotherP@ss@db2:1521/SVC2
+python3 ora_enum.py --creds-file creds.txt -k sensitive -o json
+```
+
+#### 7. Direct Query Mode
 Quickly get the database version from a target.
 
 ```bash
-python3 ora_privs.py -c user:pass -d db1:1521/SVC1 -q "SELECT banner FROM v\$version"
+python3 ora_enum.py -c user:pass -d db1:1521/SVC1 -q "SELECT banner FROM v\$version"
 ```
 
 ## OPSEC Considerations
 
 - **Password Spraying is NOISY**. It generates many failed login attempts which can trigger alerts and cause account lockouts. Use with caution.
 - Using `-P/--ask-pass` is recommended over putting passwords on the command line to avoid them being stored in shell history.
+- Using the `--creds-file` flag is the most reliable way to handle credentials with special characters.
 - Actions like `--grant-catalog-role` or using `--force` with `-q` are DDL/DML operations and are highly likely to be audited.
 
 ## License

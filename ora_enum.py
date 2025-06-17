@@ -28,7 +28,6 @@ CATEGORY_BASES = {
     "sensitive": ("TAB_COLUMNS", "SOURCE",),
 }
 DEFAULT_SENSITIVE_TERMS = "password,passwd,secret,key,token,ssn,pii,credit,card,cvv"
-CREDS_RE = re.compile(r"(?P<user>[^:/@]+)(?::(?P<pw>[^/@]*))?(?:@(?P<dsn>.+))?", re.X)
 HIGH_IMPACT_SYS_PRIVS = {
     "CREATE ANY PROCEDURE": "Can create a procedure in another schema with definer's rights to escalate.",
     "EXECUTE ANY PROCEDURE": "Can execute potentially vulnerable procedures (e.g., with AUTHID DEFINER).",
@@ -87,19 +86,42 @@ def generate_login_combos(args) -> List[Tuple[str, str, str]]:
 
     # Static/Enum Mode
     creds = []
-    c_list = split_csv(args.C) if args.C else ([args.c] if args.c else [])
-    d_list = split_csv(args.dsn_list) # Simplified logic using the unified dsn_list
+    
+    # Consolidate credentials from all sources (-c, -C, --creds-file)
+    c_list = []
+    if args.c:
+        c_list.append(args.c)
+    if args.C:
+        c_list.extend(split_csv(args.C))
+    if args.creds_file:
+        c_list.extend(read_file_lines(args.creds_file))
+
+    d_list = split_csv(args.dsn_list)
     if not c_list:
-        logging.error("No credentials provided for enumeration or query mode. Use -c or -C.")
+        logging.error("No credentials provided for enumeration or query mode. Use -c, -C, or --creds-file.")
         sys.exit(1)
 
     for idx, tok in enumerate(c_list):
-        m = CREDS_RE.fullmatch(tok)
-        if not m:
-            logging.error("Bad credential format: '%s'. Use user[:pw][@dsn].", tok)
-            continue
-        user, pw, dsn = m.group("user"), m.group("pw"), m.group("dsn")
+        # Manual parsing is more robust to special characters in passwords than regex
+        user, pw, dsn = None, None, None
         
+        user_pw_part, dsn_part = tok, None
+        if '@' in tok:
+            parts = tok.rsplit('@', 1)
+            user_pw_part = parts[0]
+            dsn = parts[1]
+        
+        if ':' in user_pw_part:
+            parts = user_pw_part.split(':', 1)
+            user = parts[0]
+            pw = parts[1]
+        else:
+            user = user_pw_part
+        
+        if not user:
+             logging.error("Bad credential format: '%s'. Could not parse username.", tok)
+             continue
+
         if pw is None: # Explicitly check for None, as '' is a valid (empty) password.
             if args.ask_pass:
                 pw = getpass.getpass(f"Enter password for {user}@{dsn or '...'}: ")
@@ -111,7 +133,7 @@ def generate_login_combos(args) -> List[Tuple[str, str, str]]:
             if idx < len(d_list):
                 dsn = d_list[idx]
             else:
-                logging.error("Missing DSN for credential '%s'. Provide it via @dsn or -d/--dsn or -D/--dsn-list.", tok)
+                logging.error("Missing DSN for credential '%s'. Provide it via @dsn or with -d/--dsn or -D/--dsn-list.", tok)
                 sys.exit(1)
         creds.append((user, pw, dsn))
     return creds
@@ -273,6 +295,7 @@ def build_parser() -> argparse.ArgumentParser:
     cred_group = p.add_argument_group("Credential & Connection (for Enum/Query Modes)")
     cred_group.add_argument("-C", metavar="list", help="Comma-separated list: user[:pw][@dsn],...")
     cred_group.add_argument("-c", metavar="pair", help="Single credential: user[:pw]")
+    cred_group.add_argument("--creds-file", help="File with one credential per line (user[:pw][@dsn]).")
     cred_group.add_argument("-P", "--ask-pass", action="store_true", help="Prompt for passwords interactively.")
 
     spray_group = p.add_argument_group("Password Spraying Mode")
