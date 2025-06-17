@@ -193,6 +193,37 @@ def dump_outputs(dfs, stem: str, outdir: Path, formats: Iterable[str]):
 # ----------------------- Main Logic Controllers ----------------------------- #
 ###############################################################################
 
+def pick_prefix(cur, scope_arg: str) -> str:
+    """
+    Determines the best accessible data dictionary prefix (DBA_, ALL_, USER_).
+    Tries each prefix in order and returns the first one that works, unless overridden by the user.
+    """
+    if scope_arg != "auto":
+        prefix = f"{scope_arg.upper()}_"
+        logging.info("User forced scope to '%s'.", prefix)
+        return prefix
+
+    logging.info("Automatically detecting best view prefix...")
+    for prefix in PREFIX_ORDER:
+        test_view = f"{prefix}TABLES"  # A common view to test for accessibility
+        try:
+            cur.execute(f"SELECT 1 FROM {test_view} WHERE 1=0")
+            logging.info("Successfully queried from '%s'. Using '%s' prefix for enumeration.", test_view, prefix)
+            return prefix
+        except oradb.DatabaseError as e:
+            err, = e.args
+            if err.code == 942:  # ORA-00942: table or view does not exist
+                logging.debug("Prefix test failed for '%s': view not accessible.", prefix)
+                continue  # Try the next prefix
+            else:
+                logging.warning("Unexpected DB error while testing prefix '%s': %s", prefix, e)
+    
+    logging.error("Could not access any standard dictionary views (DBA_, ALL_, USER_). Cannot proceed with enumeration.")
+    # Return an empty string or raise an exception to halt enumeration for this connection
+    return ""
+
+
+
 def handle_direct_query(creds, args):
     query = args.query.strip()
     is_select = query.upper().startswith('SELECT')
@@ -265,8 +296,12 @@ def handle_enumeration(creds, args):
                         logging.warning("OPSEC: --grant-catalog-role is an audited DDL action.")
                     
                     # Determine best view prefix
-                    needed = {b for cat in cats for b in CATEGORY_BASES.get(cat, [])}
-                    prefix = "DBA_" # Simplified for brevity, original `pick_prefix` logic is better
+                    prefix = pick_prefix(cur, args.scope)
+                    if not prefix:
+                        # If no prefix could be determined, we can't enumerate this connection.
+                        logging.error("Halting enumeration for %s@%s due to lack of view access.", user, dsn)
+                        continue # Move to the next credential in the list
+
                     
                     enum_targets = targets or [user]
                     for tgt_user in enum_targets:
