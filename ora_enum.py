@@ -298,8 +298,32 @@ def handle_direct_query(creds, args):
         return
 
     mode = oradb.SYSDBA if args.as_sysdba else oradb.DEFAULT_AUTH
+    fmts = split_csv(args.output.lower())
+    outdir = Path(args.outdir)
+
     for user, pw, dsn in creds:
-        print(f"\n---[ Executing query on {user}@{dsn} (Mode: {'SYSDBA' if args.as_sysdba else 'Normal'}) ]---")
+        # Requirement 3: SQL query confirmation check happens before connecting to the DB.
+        print(f"
+[OPSEC] About to execute the following query on {user}@{dsn}:")
+        print(f"    SQL: {query}")
+        try:
+            if not sys.stdout.isatty():
+                print("Non-interactive session detected. Aborting to prevent unintended actions.")
+                logging.warning("Non-interactive session. Aborting query for '%s@%s'.", user, dsn)
+                continue
+            confirm = input(f"    > Do you want to proceed with this connection? (y/N): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("
+Confirmation cancelled. Aborting execution.")
+            logging.warning("Execution cancelled by user for '%s@%s'.", user, dsn)
+            sys.exit(0)
+
+        if confirm != 'y':
+            logging.warning("Execution cancelled by user for '%s@%s'. Skipping.", user, dsn)
+            continue
+
+        print(f"
+---[ Executing query on {user}@{dsn} (Mode: {'SYSDBA' if args.as_sysdba else 'Normal'}) ]---")
         try:
             with oradb.connect(user=user, password=pw, dsn=dsn, mode=mode) as conn:
                 with conn.cursor() as cur:
@@ -307,6 +331,19 @@ def handle_direct_query(creds, args):
                     if cur.description:
                         df = pd.DataFrame(cur.fetchall(), columns=[d[0] for d in cur.description])
                         print(df.to_string() if not df.empty else "(Query returned no rows)")
+
+                        # Requirement 1 & 2: Output to JSON (and other formats) with correct naming.
+                        if any(f in fmts for f in ["excel", "csv", "json"]):
+                            stem = ""
+                            if args.log_file:
+                                stem = Path(args.log_file).stem
+                            else:
+                                safe_dsn = dsn.replace(':', '-').replace('/', '_').replace('@', '_')
+                                stem = f"query_{user.upper()}_{safe_dsn}"
+                            
+                            dfs_to_dump = {'query_result': df}
+                            dump_outputs(dfs_to_dump, stem, outdir, fmts)
+                            logging.info(f"Query results for {user}@{dsn} saved. See files starting with '{stem}' in '{outdir}'.")
                     else:
                         logging.info("Query executed successfully. %d rows affected.", cur.rowcount)
                         if not is_select:
@@ -315,7 +352,6 @@ def handle_direct_query(creds, args):
         except oradb.DatabaseError as exc:
             err, = exc.args
             logging.error("Query failed: %s (Code: %s)", err.message.strip(), err.code)
-
 def handle_spraying(creds, args):
     successes = []
     mode = oradb.SYSDBA if args.as_sysdba else oradb.DEFAULT_AUTH
