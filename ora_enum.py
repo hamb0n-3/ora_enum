@@ -136,6 +136,35 @@ def generate_login_combos(args) -> List[Tuple[str, str, str]]:
 # --- (SQL generators, File writers, and Enumeration logic are unchanged) --- #
 # ... (All functions from build_sqls to process_connection are here) ...
 ###############################################################################
+def _build_sensitive_source_query(prefix: str, search_terms: List[str], noise_filter: str) -> str:
+    """Builds the SQL to find sensitive keywords in source code with context."""
+    like_clause = _build_like_clause('s.text', search_terms)
+    # The WHERE clause must be applied to the inner subquery for performance
+    # and to the outer query to filter the final results.
+    # The noise filter is applied inside the subquery to reduce the dataset early.
+    return f"""
+    WITH source_with_context AS (
+      SELECT
+        owner, name, type, line, text,
+        LAG(text, 3) OVER (PARTITION BY owner, name, type ORDER BY line) as prev_line_3,
+        LAG(text, 2) OVER (PARTITION BY owner, name, type ORDER BY line) as prev_line_2,
+        LAG(text, 1) OVER (PARTITION BY owner, name, type ORDER BY line) as prev_line_1,
+        LEAD(text, 1) OVER (PARTITION BY owner, name, type ORDER BY line) as next_line_1,
+        LEAD(text, 2) OVER (PARTITION BY owner, name, type ORDER BY line) as next_line_2,
+        LEAD(text, 3) OVER (PARTITION BY owner, name, type ORDER BY line) as next_line_3
+      FROM {prefix}SOURCE s
+      WHERE name IN (SELECT name FROM {prefix}SOURCE s WHERE {like_clause} {noise_filter})
+    )
+    SELECT
+      owner, name, type, line,
+      prev_line_3, prev_line_2, prev_line_1,
+      text as matched_line,
+      next_line_1, next_line_2, next_line_3
+    FROM source_with_context
+    WHERE {_build_like_clause('text', search_terms)}
+    ORDER BY owner, name, line
+    """
+
 def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> dict[str, str]:
     """Generates SQL queries based on the determined privilege scope."""
     p = prefix
@@ -164,7 +193,7 @@ def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> d
         if "schemas" in categories: sql["schemas"] = f"SELECT owner, table_name, num_rows FROM DBA_TABLES WHERE owner IS NOT NULL {noise_filter} ORDER BY owner, table_name"
         if "sensitive" in categories:
             sql["sensitive_columns"] = f"SELECT owner, table_name, column_name FROM DBA_TAB_COLUMNS WHERE {_build_like_clause('column_name', search_terms)} {noise_filter} ORDER BY owner, table_name"
-            sql["sensitive_source"] = f"SELECT owner, name, type, line, text FROM DBA_SOURCE WHERE {_build_like_clause('text', search_terms)} {noise_filter} ORDER BY owner, name, line"
+            sql["sensitive_source_context"] = _build_sensitive_source_query(p, search_terms, noise_filter)
         return sql
 
     # SCOPE 2: ALL - For what the user can see across schemas. Enumeration target is always the logged-in user.
@@ -177,7 +206,7 @@ def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> d
         if "schemas" in categories: sql["schemas"] = "SELECT owner, table_name, num_rows FROM ALL_TABLES ORDER BY owner, table_name"
         if "sensitive" in categories:
             sql["sensitive_columns"] = f"SELECT owner, table_name, column_name FROM ALL_TAB_COLUMNS WHERE {_build_like_clause('column_name', search_terms)} ORDER BY owner, table_name"
-            sql["sensitive_source"] = f"SELECT owner, name, type, line, text FROM ALL_SOURCE WHERE {_build_like_clause('text', search_terms)} ORDER BY owner, name, line"
+            sql["sensitive_source_context"] = _build_sensitive_source_query(p, search_terms, "")
         return sql
 
     # SCOPE 3: USER - For what the user owns. Enumeration target is always the logged-in user.
@@ -190,7 +219,7 @@ def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> d
         if "schemas" in categories: sql["schemas"] = "SELECT USER as owner, table_name, num_rows FROM USER_TABLES ORDER BY table_name"
         if "sensitive" in categories:
             sql["sensitive_columns"] = f"SELECT USER as owner, table_name, column_name FROM USER_TAB_COLUMNS WHERE {_build_like_clause('column_name', search_terms)} ORDER BY table_name"
-            sql["sensitive_source"] = f"SELECT USER as owner, name, type, line, text FROM USER_SOURCE WHERE {_build_like_clause('text', search_terms)} ORDER BY name, line"
+            sql["sensitive_source_context"] = _build_sensitive_source_query(p, search_terms, "")
         return sql
 
     return sql
@@ -210,7 +239,13 @@ def fetch_frames(cur, stmts: dict[str, str], user: str) -> dict[str, pd.DataFram
         try:
             cur.execute(sql, bind_vars)
             cols = [d[0] for d in cur.description] if cur.description else []
-            dfs[name] = pd.DataFrame(cur.fetchall(), columns=cols)
+            df = pd.DataFrame(cur.fetchall(), columns=cols)
+            # Post-processing for context view to remove newlines for cleaner output
+            if name == "sensitive_source_context":
+                for col in df.columns:
+                    if "line" in col and df[col].dtype == 'object':
+                        df[col] = df[col].str.replace('\n', '', regex=False).str.strip()
+            dfs[name] = df
             logging.debug("Query '%s' returned %d rows.", name, len(dfs[name]))
         except oradb.DatabaseError as exc:
             logging.warning("Failed to run query for '%s': %s", name, exc)
@@ -279,10 +314,12 @@ def handle_direct_query(creds, args):
         logging.error("Query does not start with SELECT. Use --force to run DML/DDL statements.")
         return
 
+    mode = oradb.SYSDBA if args.as_sysdba else oradb.DEFAULT_AUTH
+
     for user, pw, dsn in creds:
-        print(f"\n---[ Executing query on {user}@{dsn} ]---")
+        print(f"\n---[ Executing query on {user}@{dsn} (Mode: {'SYSDBA' if args.as_sysdba else 'Normal'}) ]---")
         try:
-            with oradb.connect(user, pw, dsn) as conn:
+            with oradb.connect(user, pw, dsn, mode=mode) as conn:
                 with conn.cursor() as cur:
                     cur.execute(query)
                     if cur.description:
@@ -297,14 +334,16 @@ def handle_direct_query(creds, args):
             err, = exc.args
             logging.error("Query failed: %s (Code: %s)", err.message.strip(), err.code)
 
-def handle_spraying(creds):
+def handle_spraying(creds, args):
     successes = []
+    mode = oradb.SYSDBA if args.as_sysdba else oradb.DEFAULT_AUTH
+
     for user, pw, dsn in creds:
         try:
             logging.debug("Attempting -> %s:%s@%s", user, '********', dsn)
-            with oradb.connect(user, pw, dsn):
+            with oradb.connect(user, pw, dsn, mode=mode):
                 # If connect succeeds, we have a winner
-                success_str = f"[+] SUCCESS: {user}:{pw}@{dsn}"
+                success_str = f"[+] SUCCESS: {user}:{pw}@{dsn} (Mode: {'SYSDBA' if args.as_sysdba else 'Normal'})"
                 logging.critical(success_str)
                 successes.append(success_str)
         except oradb.DatabaseError as exc:
@@ -332,11 +371,12 @@ def handle_enumeration(creds, args):
     fmts = split_csv(args.output.lower())
     search_terms = split_csv(args.search_terms.lower())
     outdir = Path(args.outdir)
+    mode = oradb.SYSDBA if args.as_sysdba else oradb.DEFAULT_AUTH
 
     for user, pw, dsn in creds:
-        logging.info("--- Starting enumeration for login user %s@%s ---", user, dsn)
+        logging.info("--- Starting enumeration for login user %s@%s (Mode: %s) ---", user, dsn, 'SYSDBA' if args.as_sysdba else 'Normal')
         try:
-            with oradb.connect(user, pw, dsn) as conn:
+            with oradb.connect(user, pw, dsn, mode=mode) as conn:
                 with conn.cursor() as cur:
                     # Grant catalog role if requested
                     if args.grant_catalog_role:
@@ -389,6 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
     cred_group.add_argument("-c", metavar="pair", help="Single credential: user[:pw]")
     cred_group.add_argument("--creds-file", help="File with one credential per line (user[:pw][@dsn]).")
     cred_group.add_argument("-P", "--ask-pass", action="store_true", help="Prompt for passwords interactively.")
+    cred_group.add_argument("--as-sysdba", action="store_true", help="Connect with SYSDBA privilege. OPSEC WARNING: This is highly audited.")
 
     spray_group = p.add_argument_group("Password Spraying Mode")
     spray_group.add_argument("--users-file", help="File with one username per line.")
@@ -466,7 +507,7 @@ def main(argv: List[str] | None = None):
         return
 
     if args.users_file or args.login_user:
-        handle_spraying(creds)
+        handle_spraying(creds, args)
     elif args.query:
         handle_direct_query(creds, args)
     else:
