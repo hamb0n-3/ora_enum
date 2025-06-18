@@ -302,9 +302,7 @@ def handle_direct_query(creds, args):
     outdir = Path(args.outdir)
 
     for user, pw, dsn in creds:
-        # OPSEC confirmation prompt
-        print(f"
-[OPSEC] About to execute the following query on {user}@{dsn}:")
+        print(f"\n[OPSEC] About to execute the following query on {user}@{dsn}:")
         print(f"    SQL: {query}")
         try:
             if not sys.stdout.isatty():
@@ -313,8 +311,7 @@ def handle_direct_query(creds, args):
                 continue
             confirm = input(f"    > Do you want to proceed with this connection? (y/N): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print("
-Confirmation cancelled. Aborting execution.")
+            print("\nConfirmation cancelled. Aborting execution.")
             logging.warning("Execution cancelled by user for '%s@%s'.", user, dsn)
             sys.exit(0)
 
@@ -322,8 +319,7 @@ Confirmation cancelled. Aborting execution.")
             logging.warning("Execution cancelled by user for '%s@%s'. Skipping.", user, dsn)
             continue
 
-        print(f"
----[ Executing query on {user}@{dsn} (Mode: {'SYSDBA' if args.as_sysdba else 'Normal'}) ]---")
+        print(f"\n---[ Executing query on {user}@{dsn} (Mode: {'SYSDBA' if args.as_sysdba else 'Normal'}) ]---")
         try:
             with oradb.connect(user=user, password=pw, dsn=dsn, mode=mode) as conn:
                 with conn.cursor() as cur:
@@ -350,12 +346,12 @@ Confirmation cancelled. Aborting execution.")
                             logging.info("Transaction committed.")
         except oradb.DatabaseError as exc:
             err, = exc.args
-            # Enhanced error logging to show the user exactly which query failed.
             logging.error("Direct query execution failed.")
             logging.error("--- Attempted SQL ---")
             logging.error(query)
             logging.error("--- Database Response ---")
             logging.error("%s (Code: %s)", err.message.strip(), err.code)
+
 def handle_spraying(creds, args):
     successes = []
     mode = oradb.SYSDBA if args.as_sysdba else oradb.DEFAULT_AUTH
@@ -399,13 +395,10 @@ def handle_enumeration(creds, args):
                 with conn.cursor() as cur:
                     if args.grant_catalog_role:
                         logging.warning("OPSEC: --grant-catalog-role is a highly audited DDL action.")
-                        # If specific targets are listed, grant to the first one, otherwise grant to the login user.
                         target_for_grant = (targets[0] if targets else user).upper()
                         
-                        print(f"
-[OPSEC] Attempting to grant SELECT_CATALOG_ROLE to '{target_for_grant}'.")
+                        print(f"\n[OPSEC] Attempting to grant SELECT_CATALOG_ROLE to '{target_for_grant}'.")
                         try:
-                            # Abort if not in an interactive terminal to prevent accidental grants in scripts
                             if not sys.stdout.isatty():
                                 print("Non-interactive session detected. Aborting grant operation.")
                                 logging.warning("Non-interactive session. Aborting grant for '%s'.", target_for_grant)
@@ -416,11 +409,9 @@ def handle_enumeration(creds, args):
                                         grant_sql = f"GRANT SELECT_CATALOG_ROLE TO {target_for_grant}"
                                         logging.info("Executing: %s", grant_sql)
                                         cur.execute(grant_sql)
-                                        # DDL often auto-commits, but an explicit commit is good practice.
                                         conn.commit() 
                                         logging.critical(f"Successfully granted SELECT_CATALOG_ROLE to {target_for_grant}.")
                                         logging.critical('*** This usually means you can grant yourself DBA role ***')
-                                        # Re-run prefix check now that we might have more privileges.
                                         logging.info("Re-running scope detection with new privileges...")
                                         prefix = pick_prefix(cur, "auto")
                                     except oradb.DatabaseError as e:
@@ -429,13 +420,10 @@ def handle_enumeration(creds, args):
                                         logging.warning("Continuing enumeration with existing privileges.")
                                 else:
                                     logging.warning("Grant operation aborted by user.")
-
                         except (EOFError, KeyboardInterrupt):
-                            print("
-Confirmation cancelled. Aborting execution.")
+                            print("\nConfirmation cancelled. Aborting execution.")
                             logging.warning("Grant operation cancelled by user.")
                             sys.exit(0)
-
 
                     prefix = pick_prefix(cur, args.scope)
                     if not prefix:
@@ -458,7 +446,6 @@ Confirmation cancelled. Aborting execution.")
                         print(f"\n[OPSEC] About to execute {len(sqls)} SQL statement(s) for target '{tgt_user.upper()}' on {dsn}.")
                         try:
                             sys.stdout.flush()
-                            # If not running in an interactive terminal, default to 'n'
                             if not sys.stdout.isatty():
                                 print("Non-interactive session detected. Aborting to prevent unintended scans.")
                                 logging.warning("Non-interactive session. Aborting enumeration for '%s'.", tgt_user)
