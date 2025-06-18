@@ -18,13 +18,14 @@ This tool helps answer critical questions during an assessment:
 - **Privileged Connection Support**: Use the `--as-sysdba` flag to connect with `SYSDBA` privileges, essential for querying internal `SYS` objects and performing administrative enumeration.
 - **Smart Scoping**: Automatically uses the best available data dictionary views (`DBA_`, `ALL_`, `USER_`) based on the current user's permissions. This ensures that enumeration categories like `dblinks` and `sensitive` return the maximum possible data.
 - **Context-Aware Sensitive Data Hunting**: When searching source code (`-k sensitive`), the tool automatically provides the 3 lines before and after a keyword match, giving you immediate context for analysis.
+- **OPSEC-Aware Enumeration**: Before executing a potentially large number of enumeration queries, the script displays a count and prompts the user for confirmation, preventing accidental "noisy" scans.
 - **Verbose Logging**: Includes an optional log file (`-L`) and verbose console output (`-v`) that shows every SQL query being executed for full transparency.
 - **Multiple Output Formats**: Generate reports in `Excel`, `CSV`, or `JSON`.
 
 ## Requirements
 
 - **Python 3.6+**
-- The **`cx_Oracle`** (or modern **`oracledb`**), **`pandas`**, and **`openpyxl`** Python packages.
+- The **`oracledb`** (formerly `cx_Oracle`), **`pandas`**, and **`openpyxl`** Python packages.
   ```bash
   pip install oracledb pandas openpyxl
   ```
@@ -110,9 +111,11 @@ It is a core security feature of Oracle that even with the correct password, a s
 ### Examples
 
 #### 1. Basic Privilege & Schema Enumeration
-Enumerate the privileges and accessible schemas for `scott`, saving to Excel and a log file.
+Enumerate privileges for `scott`, saving to Excel. The script will prompt for confirmation before running the queries.
 ```bash
-python3 ora_enum.py -c scott:tiger -d db.example.com:1521/ORCL -k roles,sys,schemas -v -L scott_enum.log
+python3 ora_enum.py -c scott:tiger -d db.example.com:1521/ORCL -k roles,sys,schemas -v
+# [OPSEC] About to execute 4 SQL statement(s) for target 'SCOTT' on db.example.com:1521/ORCL.
+#     > Do you want to proceed? (y/N): y
 ```
 
 #### 2. Password Spraying with File-Based Lists
@@ -125,7 +128,7 @@ python3 ora_enum.py --users-file users.txt --pass-file passwords.txt --dsn-file 
 ```
 
 #### 3. Hunting for Sensitive Data (with Context)
-Log in as `appuser` and search for keywords. The output for source code will automatically include surrounding lines for context, which is invaluable for analysis.
+Log in as `appuser` and search for keywords. The output for source code will automatically include surrounding lines for context.
 ```bash
 python3 ora_enum.py -c appuser:password123 -d appdb:1521/APP \
   -k sensitive \
@@ -133,13 +136,13 @@ python3 ora_enum.py -c appuser:password123 -d appdb:1521/APP \
   -o json -O results -v
 ```
 
-#### 4. Enumerating Targets Using a Credentials File
-Use a file to handle credentials, ideal for passwords with special characters that conflict with shell parsing.
+#### 4. Enumerating Targets Using a Credentials File and a Single DSN
+Use a file for credentials and apply one DSN to all of them. This is useful for testing multiple accounts against the same database.
 ```bash
 # creds.txt contains one credential per line:
-# app_user:P@s$w0rd!/With$pecial@appdb:1521/SVC1
-# dba_user:AnotherP@ss@db2:1521/SVC2
-python3 ora_enum.py --creds-file creds.txt -k all -o json
+# app_user:P@s$w0rd!
+# dba_user:AnotherP@ss
+python3 ora_enum.py --creds-file creds.txt -d db1.example.com:1521/SVC1 -k all -o json
 ```
 
 #### 5. Direct Query as a Standard User
@@ -158,8 +161,10 @@ python3 ora_enum.py -c sys:MySysPassword -d db1:1521/SVC1 -q "SELECT * FROM SYS.
 
 -   **`--as-sysdba` is extremely powerful.** A `SYSDBA` connection bypasses all standard privilege checks and gives you full control over the database. **Both successful and failed `SYSDBA` login attempts are almost always logged and will generate alerts.** Use it surgically and only when you have `SYS` credentials.
 -   **Password Spraying is NOISY**. It generates many failed login attempts which can trigger alerts and cause account lockouts. Use with caution.
+-   **Enumeration can be NOISY**. The new confirmation prompt helps prevent accidental scans, but be aware that running many queries against data dictionary views can still be detected by monitoring solutions.
 -   **Use Files for Credentials**. Using `-P/--ask-pass` or `--creds-file` is strongly recommended over putting passwords on the command line to avoid them being stored in shell history.
 -   **Audited Actions**. Actions like `--grant-catalog-role` or using `--force` with `-q` to run DDL/DML statements are highly likely to be audited.
 
 ## License
 This tool is provided for educational and authorized security testing purposes only. Use of this tool for illegal or unauthorized activities is strictly prohibited. The author is not responsible for any misuse or damage caused by this tool.
+```
