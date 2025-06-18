@@ -303,8 +303,7 @@ def handle_direct_query(creds, args):
 
     for user, pw, dsn in creds:
         # Requirement 3: SQL query confirmation check happens before connecting to the DB.
-        print(f"
-[OPSEC] About to execute the following query on {user}@{dsn}:")
+        print(f"\n[OPSEC] About to execute the following query on {user}@{dsn}:")
         print(f"    SQL: {query}")
         try:
             if not sys.stdout.isatty():
@@ -313,8 +312,7 @@ def handle_direct_query(creds, args):
                 continue
             confirm = input(f"    > Do you want to proceed with this connection? (y/N): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print("
-Confirmation cancelled. Aborting execution.")
+            print("\nConfirmation cancelled. Aborting execution.")
             logging.warning("Execution cancelled by user for '%s@%s'.", user, dsn)
             sys.exit(0)
 
@@ -322,8 +320,7 @@ Confirmation cancelled. Aborting execution.")
             logging.warning("Execution cancelled by user for '%s@%s'. Skipping.", user, dsn)
             continue
 
-        print(f"
----[ Executing query on {user}@{dsn} (Mode: {'SYSDBA' if args.as_sysdba else 'Normal'}) ]---")
+        print(f"\n---[ Executing query on {user}@{dsn} (Mode: {'SYSDBA' if args.as_sysdba else 'Normal'}) ]---")
         try:
             with oradb.connect(user=user, password=pw, dsn=dsn, mode=mode) as conn:
                 with conn.cursor() as cur:
@@ -352,6 +349,7 @@ Confirmation cancelled. Aborting execution.")
         except oradb.DatabaseError as exc:
             err, = exc.args
             logging.error("Query failed: %s (Code: %s)", err.message.strip(), err.code)
+
 def handle_spraying(creds, args):
     successes = []
     mode = oradb.SYSDBA if args.as_sysdba else oradb.DEFAULT_AUTH
