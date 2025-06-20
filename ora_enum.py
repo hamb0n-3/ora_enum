@@ -348,6 +348,11 @@ def handle_direct_query(creds, args):
             logging.error(query)
             logging.error("--- Database Response ---")
             logging.error("%s (Code: %s)", err.message.strip(), err.code)
+            if err.code == 942:
+                logging.error("Hint: This error means the table/view does not exist or the connected user lacks privileges.")
+                logging.error("      Consider using views with 'ALL_' or 'USER_' prefixes if not using a DBA account.")
+            elif err.code == 900:
+                logging.error("Hint: The SQL statement is invalid. This can happen with client-specific commands (e.g., from SQL*Plus) that are not standard SQL.")
 
 def handle_interactive_query(creds, args):
     """Starts an interactive SQL shell for a single connection."""
@@ -379,6 +384,7 @@ def handle_interactive_query(creds, args):
 
     print(f"---[ Starting Interactive SQL Session for {user}@{dsn} (Mode: {'SYSDBA' if args.as_sysdba else 'Normal'}) ]---")
     print("Type multi-line queries ending with a ';'. Type 'exit' or 'quit' to end the session.")
+    print("Supported client commands: show con_name, show pdbs")
 
     try:
         with oradb.connect(user=user, password=pw, dsn=dsn, mode=mode) as conn:
@@ -389,39 +395,38 @@ def handle_interactive_query(creds, args):
                 sql_lines = []
                 try:
                     prompt = f"{user}@{dsn.split('/')[-1]}> "
-                    # Initial prompt
                     line = input(prompt)
                     sql_lines.append(line)
                     
-                    # Continue reading until a line ends with a semicolon
                     while not line.strip().endswith(';'):
                         line = input("... ")
                         sql_lines.append(line)
                     
                     full_input = "\n".join(sql_lines).strip()
                     
-                    # Remove the trailing semicolon for execution
-                    if full_input.endswith(';'):
-                        sql_query = full_input[:-1].strip()
-                    else:
-                        sql_query = full_input
+                    sql_query = full_input[:-1].strip() if full_input.endswith(';') else full_input.strip()
 
                     if not sql_query:
                         continue
                     
-                    # Check for exit commands
-                    if sql_query.lower() in ('exit', 'quit'):
+                    normalized_query = sql_query.lower()
+                    if normalized_query in ('exit', 'quit'):
                         break
 
-                    # Handle client-side commands
-                    if sql_query.lower() == 'commit':
+                    if normalized_query == 'commit':
                         conn.commit()
                         print("Commit complete.")
                         continue
-                    if sql_query.lower() == 'rollback':
+                    if normalized_query == 'rollback':
                         conn.rollback()
                         print("Rollback complete.")
                         continue
+
+                    # Emulate common SQL*Plus SHOW commands
+                    if normalized_query == 'show con_name':
+                        sql_query = "SELECT SYS_CONTEXT('USERENV', 'CON_NAME') AS CON_NAME FROM DUAL"
+                    elif normalized_query == 'show pdbs':
+                        sql_query = "SELECT PDB_ID, PDB_NAME, STATUS FROM V$PDBS"
 
                     is_select = sql_query.lstrip().upper().startswith('SELECT')
 
@@ -438,6 +443,13 @@ def handle_interactive_query(creds, args):
                 except oradb.DatabaseError as e:
                     err, = e.args
                     print(f"Database Error: {err.message.strip()}", file=sys.stderr)
+                    if err.code == 942: # ORA-00942: table or view does not exist
+                        print("Hint: This error means the table or view does not exist or you don't have privileges to see it.", file=sys.stderr)
+                        print("      If not connected as a privileged user, try 'ALL_' or 'USER_' prefixed views instead of 'DBA_'.", file=sys.stderr)
+                        print("      Example: SELECT * FROM ALL_TABLES instead of SELECT * FROM DBA_TABLES.", file=sys.stderr)
+                    elif err.code == 900: # ORA-00900: invalid SQL statement
+                        print("Hint: The SQL statement is not valid. This interactive shell only supports standard SQL and a few client commands (show con_name, show pdbs).", file=sys.stderr)
+
                 except (EOFError, KeyboardInterrupt):
                     print("\nExiting interactive session.")
                     break
@@ -450,6 +462,7 @@ def handle_interactive_query(creds, args):
         logging.error("An unexpected error occurred during the interactive session: %s", e)
 
     print("---[ Session Ended ]---")
+
 
 def handle_spraying(creds, args):
     successes = []
