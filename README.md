@@ -1,6 +1,6 @@
-# `ora_enum`: Advanced Oracle Enumerator & Sprayer for Red Teams
+# `ora_enum`: Advanced Oracle Enumerator & Sprayer
 
-`ora_enum` is a powerful, multi-modal Python script designed for penetration testers and red teamers to rapidly enumerate privileges, discover sensitive data, spray credentials, and execute direct queries within Oracle databases.
+`ora_enum` is a powerful, multi-modal Python script designed to rapidly enumerate privileges, discover sensitive data, spray credentials, and execute direct queries within Oracle databases.
 
 This tool helps answer critical questions during an assessment:
 - **(Spray)** Which default or weak credentials are valid?
