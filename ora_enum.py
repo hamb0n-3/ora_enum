@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# Author: hamb0n-3
-
 import argparse
 import getpass
 import itertools
@@ -352,6 +349,108 @@ def handle_direct_query(creds, args):
             logging.error("--- Database Response ---")
             logging.error("%s (Code: %s)", err.message.strip(), err.code)
 
+def handle_interactive_query(creds, args):
+    """Starts an interactive SQL shell for a single connection."""
+    if not creds:
+        logging.error("Interactive mode requires at least one credential.")
+        return
+
+    if len(creds) > 1:
+        logging.warning("Multiple credentials provided. Using the first one for the interactive session: %s", creds[0])
+
+    user, pw, dsn = creds[0]
+    mode = oradb.SYSDBA if args.as_sysdba else oradb.DEFAULT_AUTH
+
+    print(f"\n[OPSEC] About to start an interactive session for {user}@{dsn}")
+    try:
+        if not sys.stdout.isatty():
+            print("Non-interactive session detected. Aborting to prevent unintended actions.")
+            logging.warning("Non-interactive session. Aborting interactive mode for '%s@%s'.", user, dsn)
+            return
+        confirm = input(f"    > Do you want to proceed? (y/N): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nConfirmation cancelled. Aborting execution.")
+        logging.warning("Execution cancelled by user for '%s@%s'.", user, dsn)
+        return
+
+    if confirm != 'y':
+        logging.warning("Execution cancelled by user for '%s@%s'.", user, dsn)
+        return
+
+    print(f"---[ Starting Interactive SQL Session for {user}@{dsn} (Mode: {'SYSDBA' if args.as_sysdba else 'Normal'}) ]---")
+    print("Type multi-line queries ending with a ';'. Type 'exit' or 'quit' to end the session.")
+
+    try:
+        with oradb.connect(user=user, password=pw, dsn=dsn, mode=mode) as conn:
+            logging.info("Successfully connected to %s.", dsn)
+            print(f"Connected to: {conn.version}")
+
+            while True:
+                sql_lines = []
+                try:
+                    prompt = f"{user}@{dsn.split('/')[-1]}> "
+                    # Initial prompt
+                    line = input(prompt)
+                    sql_lines.append(line)
+                    
+                    # Continue reading until a line ends with a semicolon
+                    while not line.strip().endswith(';'):
+                        line = input("... ")
+                        sql_lines.append(line)
+                    
+                    full_input = "\n".join(sql_lines).strip()
+                    
+                    # Remove the trailing semicolon for execution
+                    if full_input.endswith(';'):
+                        sql_query = full_input[:-1].strip()
+                    else:
+                        sql_query = full_input
+
+                    if not sql_query:
+                        continue
+                    
+                    # Check for exit commands
+                    if sql_query.lower() in ('exit', 'quit'):
+                        break
+
+                    # Handle client-side commands
+                    if sql_query.lower() == 'commit':
+                        conn.commit()
+                        print("Commit complete.")
+                        continue
+                    if sql_query.lower() == 'rollback':
+                        conn.rollback()
+                        print("Rollback complete.")
+                        continue
+
+                    is_select = sql_query.lstrip().upper().startswith('SELECT')
+
+                    with conn.cursor() as cur:
+                        cur.execute(sql_query)
+                        if cur.description:
+                            df = pd.DataFrame(cur.fetchall(), columns=[d[0] for d in cur.description])
+                            print(df.to_string() if not df.empty else "(Query returned no rows)")
+                        else:
+                            print(f"Query OK, {cur.rowcount} rows affected.")
+                            if not is_select:
+                                print("Use 'COMMIT' or 'ROLLBACK' to finalize the transaction.")
+
+                except oradb.DatabaseError as e:
+                    err, = e.args
+                    print(f"Database Error: {err.message.strip()}", file=sys.stderr)
+                except (EOFError, KeyboardInterrupt):
+                    print("\nExiting interactive session.")
+                    break
+    
+    except oradb.DatabaseError as e:
+        err, = e.args
+        logging.error("Failed to connect to the database for interactive session for %s@%s.", user, dsn)
+        logging.error("%s (Code: %s)", err.message.strip(), err.code)
+    except Exception as e:
+        logging.error("An unexpected error occurred during the interactive session: %s", e)
+
+    print("---[ Session Ended ]---")
+
 def handle_spraying(creds, args):
     successes = []
     mode = oradb.SYSDBA if args.as_sysdba else oradb.DEFAULT_AUTH
@@ -519,6 +618,7 @@ def build_parser() -> argparse.ArgumentParser:
     enum_group.add_argument("-O", "--outdir", default=".", help="Directory for result files")
     query_group = p.add_argument_group("Direct Query Mode")
     query_group.add_argument("-q", "--query", metavar="SQL", help="Execute a single query and print results.")
+    query_group.add_argument("-i", "--interactive", action="store_true", help="Enter an interactive SQL shell.")
     query_group.add_argument("--force", action="store_true", help="Allow non-SELECT queries with -q (DANGEROUS).")
     p.add_argument("-L", "--log-file", help="Save verbose output to a log file.")
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v for INFO, -vv for DEBUG)")
@@ -549,9 +649,12 @@ def main(argv: List[str] | None = None):
 
     is_spray_mode = args.users_file or args.login_user
     is_query_mode = args.query
+    is_interactive_mode = args.interactive
 
     if is_spray_mode:
         handle_spraying(creds, args)
+    elif is_interactive_mode:
+        handle_interactive_query(creds, args)
     elif is_query_mode:
         handle_direct_query(creds, args)
     else:

@@ -6,7 +6,7 @@ This tool helps answer critical questions during an assessment:
 - **(Spray)** Which default or weak credentials are valid?
 - **(Enumerate)** What can this user see and do? Are there clear paths to escalate privileges?
 - **(Hunt)** Where is the sensitive data (PII, credentials, keys) or interesting database links?
-- **(Query)** Can I surgically extract specific information?
+- **(Query)** Can I surgically extract specific information or explore the database manually?
 
 ## Features
 
@@ -14,6 +14,7 @@ This tool helps answer critical questions during an assessment:
   - **Enumeration Mode**: Deeply audits a user's permissions, lists accessible schemas/tables, and finds sensitive data.
   - **Password Spraying Mode**: Efficiently tests lists of usernames and passwords against multiple databases.
   - **Direct Query Mode**: Executes a single SQL query for targeted data gathering.
+  - **Interactive SQL Shell**: Drops into a fully interactive SQL client for a specific database connection, perfect for manual exploration.
 - **Flexible Credential & Target Handling**: Provide credentials and DSNs individually, as comma-separated lists, or from files. This makes managing large-scale operations simple and scriptable.
 - **Privileged Connection Support**: Use the `--as-sysdba` flag to connect with `SYSDBA` privileges, essential for querying internal `SYS` objects and performing administrative enumeration.
 - **Smart Scoping**: Automatically uses the best available data dictionary views (`DBA_`, `ALL_`, `USER_`) based on the current user's permissions. This ensures that enumeration categories like `dblinks` and `sensitive` return the maximum possible data.
@@ -37,7 +38,7 @@ The script detects the desired mode of operation based on the flags provided.
 
 ```
 usage: ora_enum.py [-h] [-C list] [-c pair] [--creds-file CREDS_FILE] [-P] [--as-sysdba] [--users-file USERS_FILE] [--pass-file PASS_FILE] [--login-user LOGIN_USER] [--login-pass LOGIN_PASS] [-D list] [-d dsn] [--dsn-file DSN_FILE]
-                   [-T list] [-t name] [-s {dba,all,user,auto}] [-k include] [--search-terms SEARCH_TERMS] [-g] [-o output] [-O outdir] [-q SQL] [--force] [-L LOG_FILE] [-v]
+                   [-T list] [-t name] [-s {dba,all,user,auto}] [-k include] [--search-terms SEARCH_TERMS] [-g] [-o output] [-O outdir] [-q SQL] [-i] [--force] [-L LOG_FILE] [-v]
 
 Advanced Oracle Enumerator & Sprayer for Red Teams.
 
@@ -89,6 +90,7 @@ Enumeration Mode:
 
 Direct Query Mode:
   -q SQL, --query SQL   Execute a single query and print results.
+  -i, --interactive     Enter an interactive SQL shell.
   --force               Allow non-SELECT queries with -q (DANGEROUS).
 ```
 
@@ -157,6 +159,23 @@ To query internal `SYS`-owned objects, you must connect as `SYSDBA`.
 python3 ora_enum.py -c sys:MySysPassword -d db1:1521/SVC1 -q "SELECT * FROM SYS.EXU10LNKU" --as-sysdba
 ```
 
+#### 7. Interactive SQL Session
+For manual, exploratory queries, start an interactive session.
+```bash
+python3 ora_enum.py -c appuser:password123 -d appdb:1521/APP -i
+# [OPSEC] About to start an interactive session for appuser@appdb:1521/APP
+#     > Do you want to proceed? (y/N): y
+# ---[ Starting Interactive SQL Session for appuser@appdb:1521/APP (Mode: Normal) ]---
+# Type multi-line queries ending with a ';'. Type 'exit' or 'quit' to end the session.
+# Connected to: 19.0.0.0.0
+# appuser@APP> SELECT COUNT(*) FROM user_tables;
+#
+#    COUNT(*)
+# 0       108
+#
+# appuser@APP> exit
+```
+
 ## OPSEC Considerations
 
 -   **`--as-sysdba` is extremely powerful.** A `SYSDBA` connection bypasses all standard privilege checks and gives you full control over the database. **Both successful and failed `SYSDBA` login attempts are almost always logged and will generate alerts.** Use it surgically and only when you have `SYS` credentials.
@@ -167,4 +186,3 @@ python3 ora_enum.py -c sys:MySysPassword -d db1:1521/SVC1 -q "SELECT * FROM SYS.
 
 ## License
 This tool is provided for educational and authorized security testing purposes only. Use of this tool for illegal or unauthorized activities is strictly prohibited. The author is not responsible for any misuse or damage caused by this tool.
-```
