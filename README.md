@@ -16,6 +16,7 @@ This tool helps answer critical questions during an assessment:
   - **Direct Query Mode**: Executes a single SQL query for targeted data gathering.
   - **Interactive SQL Shell**: Drops into a fully interactive SQL client for a specific database connection, perfect for manual exploration.
 - **Flexible Credential & Target Handling**: Provide credentials and DSNs individually, as comma-separated lists, or from files. This makes managing large-scale operations simple and scriptable.
+- **LOB/BLOB Handling**: Can query and dump the contents of Large Object (LOB) columns (both BLOB and CLOB) to files, or display their size in-line.
 - **Privileged Connection Support**: Use the `--as-sysdba` flag to connect with `SYSDBA` privileges, essential for querying internal `SYS` objects and performing administrative enumeration.
 - **Smart Scoping**: Automatically uses the best available data dictionary views (`DBA_`, `ALL_`, `USER_`) based on the current user's permissions. This ensures that enumeration categories like `dblinks` and `sensitive` return the maximum possible data.
 - **Context-Aware Sensitive Data Hunting**: When searching source code (`-k sensitive`), the tool automatically provides the 3 lines before and after a keyword match, giving you immediate context for analysis.
@@ -38,7 +39,7 @@ The script detects the desired mode of operation based on the flags provided.
 
 ```
 usage: ora_enum.py [-h] [-C list] [-c pair] [--creds-file CREDS_FILE] [-P] [--as-sysdba] [--users-file USERS_FILE] [--pass-file PASS_FILE] [--login-user LOGIN_USER] [--login-pass LOGIN_PASS] [-D list] [-d dsn] [--dsn-file DSN_FILE]
-                   [-T list] [-t name] [-s {dba,all,user,auto}] [-k include] [--search-terms SEARCH_TERMS] [-g] [-o output] [-O outdir] [-q SQL] [-i] [--force] [-L LOG_FILE] [-v]
+                   [-T list] [-t name] [-s {dba,all,user,auto}] [-k include] [--search-terms SEARCH_TERMS] [-g] [-o output] [-O outdir] [-q SQL] [-i] [--force] [--dump-lobs] [-L LOG_FILE] [-v]
 
 Advanced Oracle Enumerator & Sprayer for Red Teams.
 
@@ -92,6 +93,7 @@ Direct Query Mode:
   -q SQL, --query SQL   Execute a single query and print results.
   -i, --interactive     Enter an interactive SQL shell.
   --force               Allow non-SELECT queries with -q (DANGEROUS).
+  --dump-lobs           For queries with LOBs (BLOB/CLOB), dump content to files.
 ```
 
 ### Understanding Key Concepts
@@ -175,6 +177,30 @@ python3 ora_enum.py -c appuser:password123 -d appdb:1521/APP -i
 #
 # appuser@APP> exit
 ```
+
+#### 8. Extracting BLOB/LOB Content
+Query a table containing LOBs (e.g., a BLOB column with file contents) and dump them to disk using `--dump-lobs`.
+```bash
+python3 ora_enum.py -c user:pass -d files.db.com:1521/FSDB -O ./loot \
+  -q "SELECT filename, created_date, file_content FROM user_files WHERE ROWNUM < 3" \
+  --dump-lobs
+```
+
+The script will create an output directory structure and save the LOB content into it. The console output will reference the saved files:
+```
+# Console Output
+        FILENAME CREATED_DATE                                       FILE_CONTENT
+0  report_q1.docx   2023-01-15  [LOB saved to: loot/lobs/query_USER_files.db...._r1_FILE_CONTENT.dat]
+1   design_v2.pdf   2023-02-20  [LOB saved to: loot/lobs/query_USER_files.db...._r2_FILE_CONTENT.dat]
+
+# Directory Structure
+./loot/
+└── lobs/
+    ├── query_USER_files.db.com_FSDB_r1_FILE_CONTENT.dat
+    └── query_USER_files.db.com_FSDB_r2_FILE_CONTENT.dat
+```
+If `--dump-lobs` is omitted, the output will show the LOB type and size instead: `[BLOB, Size: 12345 bytes]`.
+
 
 ## OPSEC Considerations
 

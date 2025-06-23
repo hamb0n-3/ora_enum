@@ -162,6 +162,73 @@ def _build_sensitive_source_query(prefix: str, search_terms: List[str], noise_fi
     ORDER BY owner, name, line
     """
 
+def process_query_results(cur, dump_lobs: bool, outdir: Path, stem: str) -> pd.DataFrame:
+    """
+    Fetches data from an executed cursor, handles LOBs, and returns a DataFrame.
+    If dump_lobs is True, BLOB/CLOB data is saved to files. Otherwise, a placeholder is used.
+    """
+    if not cur.description:
+        return pd.DataFrame()
+
+    cols = [d[0] for d in cur.description]
+    col_types = [d[1] for d in cur.description]
+    
+    lob_indices = {
+        i for i, t in enumerate(col_types) 
+        if t in (oradb.DB_TYPE_BLOB, oradb.DB_TYPE_CLOB)
+    }
+
+    if not lob_indices:
+        return pd.DataFrame(cur.fetchall(), columns=cols)
+
+    logging.info("LOB columns detected: %s", ", ".join(cols[i] for i in lob_indices))
+    
+    processed_rows = []
+    lob_dir = outdir / "lobs"
+    if dump_lobs:
+        lob_dir.mkdir(parents=True, exist_ok=True)
+        logging.info("Dumping LOB content to directory: %s", lob_dir)
+
+    for i, row in enumerate(cur):
+        processed_row = list(row)
+        for j in lob_indices:
+            lob = processed_row[j]
+            if lob is None or not hasattr(lob, 'read'):
+                continue
+
+            try:
+                lob_size = lob.size()
+                is_clob = col_types[j] == oradb.DB_TYPE_CLOB
+                
+                if dump_lobs:
+                    ext = "txt" if is_clob else "dat"
+                    filename = f"{stem}_r{i+1}_{cols[j]}.{ext}"
+                    filepath = lob_dir / filename
+                    
+                    content = lob.read()
+                    if is_clob:
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(content)
+                    else:
+                        with open(filepath, "wb") as f:
+                            f.write(content)
+                    
+                    processed_row[j] = f"[LOB saved to: lobs/{filename}]"
+                else:
+                    lob_type_str = "CLOB" if is_clob else "BLOB"
+                    processed_row[j] = f"[{lob_type_str}, Size: {lob_size} bytes]"
+
+            except oradb.DatabaseError as e:
+                logging.warning("Could not read LOB at row %d, column %s: %s", i + 1, cols[j], e)
+                processed_row[j] = "[LOB Read Error]"
+            except Exception as e:
+                logging.error("Unexpected error processing LOB at row %d, column %s: %s", i + 1, cols[j], e, exc_info=True)
+                processed_row[j] = "[LOB Processing Error]"
+        
+        processed_rows.append(processed_row)
+
+    return pd.DataFrame(processed_rows, columns=cols)
+
 def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> dict[str, str]:
     """Generates SQL queries based on the determined privilege scope."""
     p = prefix
@@ -211,7 +278,7 @@ def build_sqls(prefix: str, categories: List[str], search_terms: List[str]) -> d
         return sql
     return sql
 
-def fetch_frames(cur, stmts: dict[str, str], user: str) -> dict[str, pd.DataFrame]:
+def fetch_frames(cur, stmts: dict[str, str], user: str, dump_lobs: bool, outdir: Path, base_stem: str) -> dict[str, pd.DataFrame]:
     dfs = {}
     query_count = len(stmts)
     if query_count == 0:
@@ -224,8 +291,13 @@ def fetch_frames(cur, stmts: dict[str, str], user: str) -> dict[str, pd.DataFram
         bind_vars = {'bind_user': user} if ':bind_user' in sql else {}
         try:
             cur.execute(sql, bind_vars)
-            cols = [d[0] for d in cur.description] if cur.description else []
-            df = pd.DataFrame(cur.fetchall(), columns=cols)
+            
+            if cur.description:
+                query_stem = f"{base_stem}_{name}"
+                df = process_query_results(cur, dump_lobs, outdir, query_stem)
+            else:
+                df = pd.DataFrame()
+
             if name == "sensitive_source_context":
                 for col in df.columns:
                     if "line" in col and df[col].dtype == 'object':
@@ -322,17 +394,17 @@ def handle_direct_query(creds, args):
                 with conn.cursor() as cur:
                     cur.execute(query)
                     if cur.description:
-                        df = pd.DataFrame(cur.fetchall(), columns=[d[0] for d in cur.description])
+                        stem = ""
+                        if args.log_file:
+                            stem = Path(args.log_file).stem
+                        else:
+                            safe_dsn = dsn.replace(':', '-').replace('/', '_').replace('@', '_')
+                            stem = f"query_{user.upper()}_{safe_dsn}"
+                        
+                        df = process_query_results(cur, args.dump_lobs, outdir, stem)
                         print(df.to_string() if not df.empty else "(Query returned no rows)")
 
-                        if any(f in fmts for f in ["excel", "csv", "json"]):
-                            stem = ""
-                            if args.log_file:
-                                stem = Path(args.log_file).stem
-                            else:
-                                safe_dsn = dsn.replace(':', '-').replace('/', '_').replace('@', '_')
-                                stem = f"query_{user.upper()}_{safe_dsn}"
-                            
+                        if not df.empty and any(f in fmts for f in ["excel", "csv", "json"]):
                             dfs_to_dump = {'query_result': df}
                             dump_outputs(dfs_to_dump, stem, outdir, fmts)
                             logging.info(f"Query results for {user}@{dsn} saved. See files starting with '{stem}' in '{outdir}'.")
@@ -365,6 +437,7 @@ def handle_interactive_query(creds, args):
 
     user, pw, dsn = creds[0]
     mode = oradb.SYSDBA if args.as_sysdba else oradb.DEFAULT_AUTH
+    outdir = Path(args.outdir)
 
     print(f"\n[OPSEC] About to start an interactive session for {user}@{dsn}")
     try:
@@ -433,7 +506,10 @@ def handle_interactive_query(creds, args):
                     with conn.cursor() as cur:
                         cur.execute(sql_query)
                         if cur.description:
-                            df = pd.DataFrame(cur.fetchall(), columns=[d[0] for d in cur.description])
+                            timestamp = time.strftime("%H%M%S")
+                            safe_dsn = dsn.replace(':', '-').replace('/', '_').replace('@', '_')
+                            stem = f"interactive_{user.upper()}_{safe_dsn}_{timestamp}"
+                            df = process_query_results(cur, args.dump_lobs, outdir, stem)
                             print(df.to_string() if not df.empty else "(Query returned no rows)")
                         else:
                             print(f"Query OK, {cur.rowcount} rows affected.")
@@ -571,11 +647,12 @@ def handle_enumeration(creds, args):
                         if confirm != 'y':
                             logging.warning("Execution cancelled by user for target '%s'. Skipping.", tgt_user)
                             continue
-
-                        dfs = fetch_frames(cur, sqls, tgt_user.upper())
+                        
+                        safe_dsn = dsn.replace(':', '-').replace('/', '_').replace('@', '_')
+                        stem = f"{tgt_user.upper()}_{safe_dsn}"
+                        dfs = fetch_frames(cur, sqls, tgt_user.upper(), args.dump_lobs, outdir, stem)
                         if not dfs: continue
                         analyze_for_privesc(dfs)
-                        stem = f"{tgt_user.upper()}_{dsn.replace(':', '-').replace('/', '_').replace('@', '_')}"
                         dump_outputs(dfs, stem, outdir, fmts)
         except oradb.DatabaseError as exc:
             err, = exc.args
@@ -633,6 +710,7 @@ def build_parser() -> argparse.ArgumentParser:
     query_group.add_argument("-q", "--query", metavar="SQL", help="Execute a single query and print results.")
     query_group.add_argument("-i", "--interactive", action="store_true", help="Enter an interactive SQL shell.")
     query_group.add_argument("--force", action="store_true", help="Allow non-SELECT queries with -q (DANGEROUS).")
+    query_group.add_argument("--dump-lobs", action="store_true", help="For queries with LOBs (BLOB/CLOB), dump content to files.")
     p.add_argument("-L", "--log-file", help="Save verbose output to a log file.")
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v for INFO, -vv for DEBUG)")
     return p
